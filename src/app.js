@@ -4,11 +4,30 @@ require('dotenv').config();
 
 const app = express();
 
-// Middlewares globales
+// CORS — acepta el frontend de Vercel y localhost
+const originesPermitidos = [
+  'https://maracumango-beta.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:3001'
+];
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL,
-  credentials: true
+  origin: (origin, callback) => {
+    // Permitir requests sin origin (Postman, Railway health checks)
+    if (!origin) return callback(null, true);
+    if (originesPermitidos.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error('No permitido por CORS'));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// Manejo de preflight OPTIONS
+app.options('*', cors());
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -29,12 +48,12 @@ app.get('/', (req, res) => {
   res.json({ mensaje: '🥭 Maracu Mango API funcionando correctamente' });
 });
 
-// Manejo de rutas no encontradas
+// 404
 app.use((req, res) => {
   res.status(404).json({ mensaje: 'Ruta no encontrada' });
 });
 
-// Manejo de errores globales
+// Error global
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ mensaje: 'Error interno del servidor', error: err.message });
