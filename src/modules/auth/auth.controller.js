@@ -28,15 +28,15 @@ const login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      {
-        id: usuario.id,
-        nombre: usuario.nombre,
-        correo: usuario.correo,
-        rol: usuario.rol
-      },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN }
-    );
+  {
+    id: usuario.id,
+    nombre: usuario.nombre,
+    correo: usuario.correo,
+    rol: usuario.rol
+  },
+  process.env.JWT_SECRET,
+  { expiresIn: '7d' }  // hardcodeado para evitar el problema de la variable
+);
 
     res.json({
       mensaje: 'Login exitoso',
