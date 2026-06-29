@@ -4,29 +4,19 @@ require('dotenv').config();
 
 const app = express();
 
-// CORS — acepta el frontend de Vercel y localhost
-const originesPermitidos = [
-  'https://maracumango-beta.vercel.app',
-  'http://localhost:3000',
-  'http://localhost:3001'
-];
+// CORS manual — headers directamente en cada respuesta
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', 'https://maracumango-beta.vercel.app');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,Authorization,Accept,Origin,X-Requested-With');
 
-app.use(cors({
-  origin: (origin, callback) => {
-    // Permitir requests sin origin (Postman, Railway health checks)
-    if (!origin) return callback(null, true);
-    if (originesPermitidos.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error('No permitido por CORS'));
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
-// Manejo de preflight OPTIONS
-app.options('*', cors());
+  // Responder preflight inmediatamente
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  next();
+});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
