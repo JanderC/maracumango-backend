@@ -1,15 +1,6 @@
 const pool = require('../../config/db');
 const { cloudinary } = require('../../config/cloudinary');
 
-const calcularPrecioFinal = (costo_unitario, porcentaje_ganancia, precio_manual, usar_precio_manual) => {
-  if (usar_precio_manual && precio_manual) {
-    return parseFloat(precio_manual);
-  }
-  const costo = parseFloat(costo_unitario);
-  const porcentaje = parseFloat(porcentaje_ganancia) || 0;
-  return parseFloat((costo + (costo * porcentaje / 100)).toFixed(2));
-};
-
 // Sanitiza valores numéricos — convierte '' o null a null
 const num = (val) => {
   if (val === '' || val === null || val === undefined) return null;
@@ -23,6 +14,30 @@ const bool = (val) => {
   return false;
 };
 
+// Calcula el precio final en COP (manual o por porcentaje de ganancia)
+const calcularPrecioFinalCop = (costo_unitario_cop, porcentaje_ganancia, precio_manual_cop, usar_precio_manual) => {
+  if (usar_precio_manual && precio_manual_cop) {
+    return parseFloat(parseFloat(precio_manual_cop).toFixed(2));
+  }
+  const costo = parseFloat(costo_unitario_cop) || 0;
+  const porcentaje = parseFloat(porcentaje_ganancia) || 0;
+  return parseFloat((costo + (costo * porcentaje / 100)).toFixed(2));
+};
+
+// Obtiene la tasa COP activa más reciente (tasas_cambio.tasa_por_usd = cuántos COP equivalen a 1 USD)
+const obtenerTasaCopActiva = async () => {
+  const resultado = await pool.query(
+    `SELECT * FROM tasas_cambio WHERE moneda = 'COP' ORDER BY actualizado_en DESC LIMIT 1`
+  );
+  return resultado.rows[0] || null;
+};
+
+// Convierte un monto en COP a USD usando la tasa indicada (COP por USD)
+const copAUsd = (montoCop, tasaPorUsd) => {
+  if (montoCop === null || montoCop === undefined || !tasaPorUsd) return 0;
+  return parseFloat((parseFloat(montoCop) / parseFloat(tasaPorUsd)).toFixed(2));
+};
+
 const obtenerProductos = async (req, res) => {
   try {
     const resultado = await pool.query(
@@ -31,8 +46,8 @@ const obtenerProductos = async (req, res) => {
               i.nombre AS inventario_nombre,
               i.cantidad AS stock_inventario,
               ROUND(
-                CASE WHEN p.costo_unitario > 0
-                  THEN ((p.precio_final_usd - p.costo_unitario) / p.costo_unitario) * 100
+                CASE WHEN p.costo_unitario_cop > 0
+                  THEN ((p.precio_final_cop - p.costo_unitario_cop) / p.costo_unitario_cop) * 100
                   ELSE 0
                 END, 2
               ) AS porcentaje_ganancia_real
@@ -51,7 +66,7 @@ const obtenerProductos = async (req, res) => {
 const obtenerProductosActivos = async (req, res) => {
   try {
     const resultado = await pool.query(
-      `SELECT p.id, p.nombre, p.descripcion, p.precio_final_usd,
+      `SELECT p.id, p.nombre, p.descripcion, p.precio_final_cop, p.precio_final_usd,
               p.imagen_url, p.tiene_toppings, p.categoria_id,
               c.nombre AS categoria
        FROM productos p
@@ -105,7 +120,7 @@ const obtenerProducto = async (req, res) => {
 const crearProducto = async (req, res) => {
   const {
     nombre, descripcion, categoria_id, inventario_id,
-    costo_unitario, porcentaje_ganancia, precio_manual,
+    costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
     usar_precio_manual, tiene_toppings, toppings_ids
   } = req.body;
 
@@ -113,19 +128,31 @@ const crearProducto = async (req, res) => {
     if (!nombre) {
       return res.status(400).json({ mensaje: 'El nombre es requerido' });
     }
-    if (!costo_unitario || costo_unitario === '') {
-      return res.status(400).json({ mensaje: 'El costo unitario es requerido' });
+    if (!costo_unitario_cop || costo_unitario_cop === '') {
+      return res.status(400).json({ mensaje: 'El costo unitario (COP) es requerido' });
+    }
+
+    // La tasa COP es obligatoria para poder derivar los campos en USD
+    const tasaCop = await obtenerTasaCopActiva();
+    if (!tasaCop) {
+      return res.status(400).json({ mensaje: 'Debes cargar una tasa COP antes de crear productos' });
     }
 
     const usarManual = bool(usar_precio_manual);
     const tieneToppings = bool(tiene_toppings);
-    const costoNum = num(costo_unitario);
+    const costoCopNum = num(costo_unitario_cop);
     const porcentajeNum = num(porcentaje_ganancia) || 0;
-    const precioManualNum = num(precio_manual);
+    const precioManualCopNum = num(precio_manual_cop);
     const categoriaNum = num(categoria_id);
     const inventarioNum = num(inventario_id);
 
-    const precio_final_usd = calcularPrecioFinal(costoNum, porcentajeNum, precioManualNum, usarManual);
+    const precio_final_cop = calcularPrecioFinalCop(costoCopNum, porcentajeNum, precioManualCopNum, usarManual);
+    const tasaPorUsd = parseFloat(tasaCop.tasa_por_usd);
+
+    // Derivados en USD (congelados con la tasa de este momento)
+    const costo_unitario = copAUsd(costoCopNum, tasaPorUsd);
+    const precio_manual = usarManual ? copAUsd(precioManualCopNum, tasaPorUsd) : null;
+    const precio_final_usd = copAUsd(precio_final_cop, tasaPorUsd);
 
     // Imagen subida a Cloudinary — usar URL y public_id del archivo procesado
     let imagen_url = null;
@@ -138,20 +165,26 @@ const crearProducto = async (req, res) => {
 
     const resultado = await pool.query(
   `INSERT INTO productos
-    (nombre, descripcion, categoria_id, inventario_id, costo_unitario,
-     porcentaje_ganancia, precio_manual, usar_precio_manual, precio_final_usd,
-     precio_usd, imagen_url, imagen_public_id, tiene_toppings)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    (nombre, descripcion, categoria_id, inventario_id,
+     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop, usar_precio_manual,
+     precio_final_cop, tasa_cambio_usada,
+     costo_unitario, precio_manual, precio_final_usd, precio_usd,
+     imagen_url, imagen_public_id, tiene_toppings)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
    RETURNING *`,
   [
     nombre,
     descripcion || null,
     categoriaNum,
     inventarioNum,
-    costoNum,
+    costoCopNum,
     porcentajeNum,
-    precioManualNum,
+    precioManualCopNum,
     usarManual,
+    precio_final_cop,
+    tasaPorUsd,
+    costo_unitario,
+    precio_manual,
     precio_final_usd,
     precio_final_usd,   // mismo valor para precio_usd
     imagen_url,
@@ -184,7 +217,7 @@ const actualizarProducto = async (req, res) => {
   const { id } = req.params;
   const {
     nombre, descripcion, categoria_id, inventario_id,
-    costo_unitario, porcentaje_ganancia, precio_manual,
+    costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
     usar_precio_manual, tiene_toppings, toppings_ids
   } = req.body;
 
@@ -196,16 +229,28 @@ const actualizarProducto = async (req, res) => {
 
     const productoActual = existe.rows[0];
 
+    // La tasa COP es obligatoria para poder derivar los campos en USD
+    const tasaCop = await obtenerTasaCopActiva();
+    if (!tasaCop) {
+      return res.status(400).json({ mensaje: 'Debes cargar una tasa COP antes de actualizar productos' });
+    }
+    const tasaPorUsd = parseFloat(tasaCop.tasa_por_usd);
+
     const usarManual = usar_precio_manual !== undefined ? bool(usar_precio_manual) : productoActual.usar_precio_manual;
     const tieneToppings = tiene_toppings !== undefined ? bool(tiene_toppings) : productoActual.tiene_toppings;
 
-    const costoNum = num(costo_unitario) ?? parseFloat(productoActual.costo_unitario);
+    const costoCopNum = num(costo_unitario_cop) ?? parseFloat(productoActual.costo_unitario_cop);
     const porcentajeNum = num(porcentaje_ganancia) ?? parseFloat(productoActual.porcentaje_ganancia);
-    const precioManualNum = num(precio_manual) ?? num(productoActual.precio_manual);
+    const precioManualCopNum = num(precio_manual_cop) ?? num(productoActual.precio_manual_cop);
     const categoriaNum = num(categoria_id) ?? num(productoActual.categoria_id);
     const inventarioNum = num(inventario_id) ?? num(productoActual.inventario_id);
 
-    const precio_final_usd = calcularPrecioFinal(costoNum, porcentajeNum, precioManualNum, usarManual);
+    const precio_final_cop = calcularPrecioFinalCop(costoCopNum, porcentajeNum, precioManualCopNum, usarManual);
+
+    // Derivados en USD (recalculados y congelados con la tasa vigente en este momento)
+    const costo_unitario = copAUsd(costoCopNum, tasaPorUsd);
+    const precio_manual = usarManual ? copAUsd(precioManualCopNum, tasaPorUsd) : null;
+    const precio_final_usd = copAUsd(precio_final_cop, tasaPorUsd);
 
     // Manejar imagen
     let imagen_url = productoActual.imagen_url;
@@ -230,25 +275,35 @@ const actualizarProducto = async (req, res) => {
         descripcion = $2,
         categoria_id = $3,
         inventario_id = $4,
-        costo_unitario = $5,
+        costo_unitario_cop = $5,
         porcentaje_ganancia = $6,
-        precio_manual = $7,
+        precio_manual_cop = $7,
         usar_precio_manual = $8,
-        precio_final_usd = $9,
-        imagen_url = $10,
-        imagen_public_id = $11,
-        tiene_toppings = $12
-       WHERE id = $13
+        precio_final_cop = $9,
+        tasa_cambio_usada = $10,
+        costo_unitario = $11,
+        precio_manual = $12,
+        precio_final_usd = $13,
+        precio_usd = $14,
+        imagen_url = $15,
+        imagen_public_id = $16,
+        tiene_toppings = $17
+       WHERE id = $18
        RETURNING *`,
       [
         nombre || productoActual.nombre,
         descripcion !== undefined ? descripcion : productoActual.descripcion,
         categoriaNum,
         inventarioNum,
-        costoNum,
+        costoCopNum,
         porcentajeNum,
-        precioManualNum,
+        precioManualCopNum,
         usarManual,
+        precio_final_cop,
+        tasaPorUsd,
+        costo_unitario,
+        precio_manual,
+        precio_final_usd,
         precio_final_usd,
         imagen_url,
         imagen_public_id,
@@ -325,4 +380,4 @@ module.exports = {
   actualizarProducto,
   toggleActivoProducto,
   eliminarProducto
-};  
+};
