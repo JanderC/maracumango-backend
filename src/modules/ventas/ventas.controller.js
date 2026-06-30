@@ -121,7 +121,7 @@ const crearVenta = async (req, res) => {
       moneda_pago,
       tipo_pago,
       cuenta_bancaria_id,
-      tasa_cambio_usada,
+      tasa_cambio_usada, // tasa BS/USD, solo se usa si moneda_pago === 'BS'
       notas,
       items // [{ producto_id, cantidad, toppings_ids: [] }]
     } = req.body;
@@ -130,7 +130,9 @@ const crearVenta = async (req, res) => {
       return res.status(400).json({ mensaje: 'Moneda, tipo de pago e items son requeridos' });
     }
 
-    if (!['USD', 'BS', 'COP'].includes(moneda_pago.toUpperCase())) {
+    const monedaPago = moneda_pago.toUpperCase();
+
+    if (!['USD', 'BS', 'COP'].includes(monedaPago)) {
       return res.status(400).json({ mensaje: 'Moneda inválida. Use USD, BS o COP' });
     }
 
@@ -142,13 +144,22 @@ const crearVenta = async (req, res) => {
       return res.status(400).json({ mensaje: 'Debe seleccionar una cuenta bancaria para transferencia' });
     }
 
-    if (moneda_pago !== 'USD' && !tasa_cambio_usada) {
-      return res.status(400).json({ mensaje: 'Debe proporcionar la tasa de cambio para pagos en BS o COP' });
+    if (monedaPago === 'BS' && !tasa_cambio_usada) {
+      return res.status(400).json({ mensaje: 'Debe proporcionar la tasa de cambio (BS/USD) para pagos en BS' });
     }
+
+    // Tasa COP activa — siempre se necesita porque precio_final_cop es la fuente de verdad
+    const tasaCopRow = await client.query(
+      `SELECT * FROM tasas_cambio WHERE moneda = 'COP' ORDER BY actualizado_en DESC LIMIT 1`
+    );
+    if (tasaCopRow.rows.length === 0) {
+      return res.status(400).json({ mensaje: 'No hay tasa COP registrada. Cárgala en Tasas de cambio antes de vender' });
+    }
+    const tasaCopPorUsd = parseFloat(tasaCopRow.rows[0].tasa_por_usd);
 
     await client.query('BEGIN');
 
-    let total_usd = 0;
+    let total_cop = 0;
     const itemsProcesados = [];
 
     // Procesar cada item
@@ -160,9 +171,9 @@ const crearVenta = async (req, res) => {
         return res.status(400).json({ mensaje: 'Cada item debe tener producto_id y cantidad válida' });
       }
 
-      // Obtener producto
+      // Obtener producto — precio_final_cop es la fuente de verdad real
       const producto = await client.query(
-        'SELECT id, nombre, precio_final_usd, costo_unitario FROM productos WHERE id = $1 AND activo = true',
+        'SELECT id, nombre, precio_final_cop, costo_unitario_cop FROM productos WHERE id = $1 AND activo = true',
         [producto_id]
       );
 
@@ -172,66 +183,82 @@ const crearVenta = async (req, res) => {
       }
 
       const prod = producto.rows[0];
-      let precio_unitario = parseFloat(prod.precio_final_usd);
-      let costo_unitario = parseFloat(prod.costo_unitario);
+      let precio_unitario_cop = parseFloat(prod.precio_final_cop);
+      let costo_unitario_cop = parseFloat(prod.costo_unitario_cop);
 
-      // Sumar toppings al precio
+      // Sumar toppings al precio (toppings ya tienen precio_cop propio)
       let toppings_procesados = [];
       if (toppings_ids && toppings_ids.length > 0) {
         for (const topping_id of toppings_ids) {
           const topping = await client.query(
-            'SELECT id, nombre, precio_usd FROM toppings WHERE id = $1 AND activo = true',
+            'SELECT id, nombre, precio_cop FROM toppings WHERE id = $1 AND activo = true',
             [topping_id]
           );
           if (topping.rows.length > 0) {
-            precio_unitario += parseFloat(topping.rows[0].precio_usd);
+            const precioToppingCop = parseFloat(topping.rows[0].precio_cop) || 0;
+            precio_unitario_cop += precioToppingCop;
             toppings_procesados.push({
               topping_id,
-              precio_usd: parseFloat(topping.rows[0].precio_usd)
+              precio_cop: precioToppingCop,
+              precio_usd: parseFloat((precioToppingCop / tasaCopPorUsd).toFixed(2))
             });
           }
         }
       }
 
-      const subtotal_usd = parseFloat((precio_unitario * cantidad).toFixed(2));
-      const ganancia_usd = parseFloat(((precio_unitario - costo_unitario) * cantidad).toFixed(2));
-      total_usd += subtotal_usd;
+      const subtotal_cop = parseFloat((precio_unitario_cop * cantidad).toFixed(2));
+      const ganancia_cop = parseFloat(((precio_unitario_cop - costo_unitario_cop) * cantidad).toFixed(2));
+      total_cop += subtotal_cop;
+
+      // Derivados en USD (para mantener las columnas _usd existentes en items_venta)
+      const precio_unitario_usd = parseFloat((precio_unitario_cop / tasaCopPorUsd).toFixed(2));
+      const costo_unitario_usd = parseFloat((costo_unitario_cop / tasaCopPorUsd).toFixed(2));
+      const subtotal_usd = parseFloat((subtotal_cop / tasaCopPorUsd).toFixed(2));
+      const ganancia_usd = parseFloat((ganancia_cop / tasaCopPorUsd).toFixed(2));
 
       itemsProcesados.push({
         producto_id,
         cantidad,
-        precio_unitario_usd: precio_unitario,
-        costo_unitario_usd: costo_unitario,
+        precio_unitario_usd,
+        costo_unitario_usd,
         subtotal_usd,
         ganancia_usd,
+        precio_unitario_cop,
+        costo_unitario_cop,
+        subtotal_cop,
+        ganancia_cop,
         toppings: toppings_procesados
       });
     }
 
-    total_usd = parseFloat(total_usd.toFixed(2));
+    total_cop = parseFloat(total_cop.toFixed(2));
+    const total_usd = parseFloat((total_cop / tasaCopPorUsd).toFixed(2));
 
-    // Calcular total en moneda de pago
-    let total_pagado = total_usd;
-    if (moneda_pago === 'BS') {
-      total_pagado = parseFloat((total_usd * parseFloat(tasa_cambio_usada)).toFixed(2));
-    } else if (moneda_pago === 'COP') {
+    // Calcular total en la moneda de pago elegida
+    let total_pagado;
+    if (monedaPago === 'COP') {
+      total_pagado = total_cop;
+    } else if (monedaPago === 'USD') {
+      total_pagado = total_usd;
+    } else { // BS — se cruza vía USD con la tasa BS/USD vigente
       total_pagado = parseFloat((total_usd * parseFloat(tasa_cambio_usada)).toFixed(2));
     }
 
     // Insertar venta
     const ventaResult = await client.query(
       `INSERT INTO ventas
-        (usuario_id, total_usd, total_pagado, moneda_pago, tipo_pago, cuenta_bancaria_id, tasa_cambio_usada, notas)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (usuario_id, total_usd, total_cop, total_pagado, moneda_pago, tipo_pago, cuenta_bancaria_id, tasa_cambio_usada, notas)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         req.usuario.id,
         total_usd,
+        total_cop,
         total_pagado,
-        moneda_pago.toUpperCase(),
+        monedaPago,
         tipo_pago,
         cuenta_bancaria_id || null,
-        tasa_cambio_usada || null,
+        monedaPago === 'BS' ? tasa_cambio_usada : tasaCopPorUsd,
         notas || null
       ]
     );
@@ -242,8 +269,10 @@ const crearVenta = async (req, res) => {
     for (const item of itemsProcesados) {
       const itemResult = await client.query(
         `INSERT INTO items_venta
-          (venta_id, producto_id, cantidad, precio_unitario_usd, costo_unitario_usd, subtotal_usd, ganancia_usd)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+          (venta_id, producto_id, cantidad,
+           precio_unitario_usd, costo_unitario_usd, subtotal_usd, ganancia_usd,
+           precio_unitario_cop, costo_unitario_cop, subtotal_cop, ganancia_cop)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
          RETURNING id`,
         [
           venta.id,
@@ -252,7 +281,11 @@ const crearVenta = async (req, res) => {
           item.precio_unitario_usd,
           item.costo_unitario_usd,
           item.subtotal_usd,
-          item.ganancia_usd
+          item.ganancia_usd,
+          item.precio_unitario_cop,
+          item.costo_unitario_cop,
+          item.subtotal_cop,
+          item.ganancia_cop
         ]
       );
 
@@ -260,9 +293,9 @@ const crearVenta = async (req, res) => {
 
       for (const topping of item.toppings) {
         await client.query(
-          `INSERT INTO items_venta_toppings (item_venta_id, topping_id, precio_usd)
-           VALUES ($1, $2, $3)`,
-          [item_venta_id, topping.topping_id, topping.precio_usd]
+          `INSERT INTO items_venta_toppings (item_venta_id, topping_id, precio_usd, precio_cop)
+           VALUES ($1, $2, $3, $4)`,
+          [item_venta_id, topping.topping_id, topping.precio_usd, topping.precio_cop]
         );
       }
     }
