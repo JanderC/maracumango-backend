@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const { resolverCodigo } = require('../../utils/codigo.helper');
 
 const obtenerToppings = async (req, res) => {
   try {
@@ -51,7 +52,7 @@ const calcularConversiones = async (precio_cop) => {
 };
 
 const crearTopping = async (req, res) => {
-  const { nombre, precio_cop } = req.body;
+  const { nombre, precio_cop, codigo } = req.body;
 
   try {
     if (!nombre) {
@@ -68,13 +69,20 @@ const crearTopping = async (req, res) => {
       return res.status(409).json({ mensaje: 'Ya existe un topping con ese nombre' });
     }
 
+    let codigoFinal;
+    try {
+      codigoFinal = await resolverCodigo({ tabla: 'toppings', prefijo: 'TOP', codigoInput: codigo });
+    } catch (e) {
+      return res.status(e.status || 500).json({ mensaje: e.mensaje || 'Error resolviendo código' });
+    }
+
     const { precio_usd, precio_bs } = await calcularConversiones(precio_cop);
 
     const resultado = await pool.query(
-      `INSERT INTO toppings (nombre, precio_cop, precio_usd, precio_bs)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO toppings (nombre, precio_cop, precio_usd, precio_bs, codigo)
+       VALUES ($1, $2, $3, $4, $5)
        RETURNING *`,
-      [nombre, parseFloat(precio_cop) || 0, precio_usd, precio_bs]
+      [nombre, parseFloat(precio_cop) || 0, precio_usd, precio_bs, codigoFinal]
     );
 
     res.status(201).json({
@@ -89,12 +97,23 @@ const crearTopping = async (req, res) => {
 
 const actualizarTopping = async (req, res) => {
   const { id } = req.params;
-  const { nombre, precio_cop } = req.body;
+  const { nombre, precio_cop, codigo } = req.body;
 
   try {
-    const existe = await pool.query('SELECT id FROM toppings WHERE id = $1', [id]);
+    const existe = await pool.query('SELECT * FROM toppings WHERE id = $1', [id]);
     if (existe.rows.length === 0) {
       return res.status(404).json({ mensaje: 'Topping no encontrado' });
+    }
+
+    const actual = existe.rows[0];
+
+    let codigoFinal = actual.codigo;
+    if (codigo !== undefined && String(codigo).trim() !== '' && codigo !== actual.codigo) {
+      try {
+        codigoFinal = await resolverCodigo({ tabla: 'toppings', prefijo: 'TOP', codigoInput: codigo, excluirId: id });
+      } catch (e) {
+        return res.status(e.status || 500).json({ mensaje: e.mensaje || 'Error resolviendo código' });
+      }
     }
 
     const { precio_usd, precio_bs } = await calcularConversiones(precio_cop);
@@ -104,10 +123,11 @@ const actualizarTopping = async (req, res) => {
         nombre = COALESCE($1, nombre),
         precio_cop = COALESCE($2, precio_cop),
         precio_usd = $3,
-        precio_bs = $4
-       WHERE id = $5
+        precio_bs = $4,
+        codigo = $5
+       WHERE id = $6
        RETURNING *`,
-      [nombre, parseFloat(precio_cop) || 0, precio_usd, precio_bs, id]
+      [nombre, parseFloat(precio_cop) || 0, precio_usd, precio_bs, codigoFinal, id]
     );
 
     res.json({

@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const { resolverCodigo } = require('../../utils/codigo.helper');
 
 const obtenerInventario = async (req, res) => {
   try {
@@ -40,7 +41,7 @@ const crearItemInventario = async (req, res) => {
     nombre, descripcion, categoria_id,
     cantidad, unidad_medida,
     costo_total, moneda_compra, tasa_cambio,
-    proveedor, fecha_compra
+    proveedor, fecha_compra, codigo
   } = req.body;
 
   try {
@@ -50,6 +51,13 @@ const crearItemInventario = async (req, res) => {
 
     if (!['USD', 'BS', 'COP'].includes(moneda_compra.toUpperCase())) {
       return res.status(400).json({ mensaje: 'Moneda inválida. Use USD, BS o COP' });
+    }
+
+    let codigoFinal;
+    try {
+      codigoFinal = await resolverCodigo({ tabla: 'inventario', prefijo: 'INV', codigoInput: codigo });
+    } catch (e) {
+      return res.status(e.status || 500).json({ mensaje: e.mensaje || 'Error resolviendo código' });
     }
 
     const costoTotal = parseFloat(costo_total);
@@ -72,13 +80,13 @@ const crearItemInventario = async (req, res) => {
       `INSERT INTO inventario
         (nombre, descripcion, categoria_id, cantidad, unidad_medida,
          costo_total, costo_unitario, moneda_compra, tasa_cambio,
-         costo_total_usd, costo_unitario_usd, proveedor, fecha_compra)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         costo_total_usd, costo_unitario_usd, proveedor, fecha_compra, codigo)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         nombre, descripcion, categoria_id || null, cant, unidad_medida,
         costoTotal, costo_unitario, moneda_compra.toUpperCase(), tasa_cambio || null,
-        costo_total_usd, costo_unitario_usd, proveedor, fecha_compra || null
+        costo_total_usd, costo_unitario_usd, proveedor, fecha_compra || null, codigoFinal
       ]
     );
 
@@ -98,7 +106,7 @@ const actualizarItemInventario = async (req, res) => {
     nombre, descripcion, categoria_id,
     cantidad, unidad_medida,
     costo_total, moneda_compra, tasa_cambio,
-    proveedor, fecha_compra
+    proveedor, fecha_compra, codigo
   } = req.body;
 
   try {
@@ -108,6 +116,16 @@ const actualizarItemInventario = async (req, res) => {
     }
 
     const actual = existe.rows[0];
+
+    let codigoFinal = actual.codigo;
+    if (codigo !== undefined && String(codigo).trim() !== '' && codigo !== actual.codigo) {
+      try {
+        codigoFinal = await resolverCodigo({ tabla: 'inventario', prefijo: 'INV', codigoInput: codigo, excluirId: id });
+      } catch (e) {
+        return res.status(e.status || 500).json({ mensaje: e.mensaje || 'Error resolviendo código' });
+      }
+    }
+
     const nuevaCantidad = cantidad ? parseInt(cantidad) : actual.cantidad;
     const nuevoCostoTotal = costo_total ? parseFloat(costo_total) : parseFloat(actual.costo_total);
     const nuevaMoneda = moneda_compra ? moneda_compra.toUpperCase() : actual.moneda_compra;
@@ -139,8 +157,9 @@ const actualizarItemInventario = async (req, res) => {
         costo_total_usd = $10,
         costo_unitario_usd = $11,
         proveedor = COALESCE($12, proveedor),
-        fecha_compra = COALESCE($13, fecha_compra)
-       WHERE id = $14
+        fecha_compra = COALESCE($13, fecha_compra),
+        codigo = $14
+       WHERE id = $15
        RETURNING *`,
       [
         nombre, descripcion, categoria_id,
@@ -148,7 +167,7 @@ const actualizarItemInventario = async (req, res) => {
         nuevoCostoTotal, nuevoCostoUnitario,
         nuevaMoneda, nuevaTasa,
         costo_total_usd, costo_unitario_usd,
-        proveedor, fecha_compra, id
+        proveedor, fecha_compra, codigoFinal, id
       ]
     );
 

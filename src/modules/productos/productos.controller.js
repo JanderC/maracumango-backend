@@ -1,5 +1,6 @@
 const pool = require('../../config/db');
 const { cloudinary } = require('../../config/cloudinary');
+const { resolverCodigo } = require('../../utils/codigo.helper');
 
 // Sanitiza valores numéricos — convierte '' o null a null
 const num = (val) => {
@@ -121,7 +122,7 @@ const crearProducto = async (req, res) => {
   const {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
-    usar_precio_manual, tiene_toppings, toppings_ids
+    usar_precio_manual, tiene_toppings, toppings_ids, codigo
   } = req.body;
 
   try {
@@ -136,6 +137,14 @@ const crearProducto = async (req, res) => {
     const tasaCop = await obtenerTasaCopActiva();
     if (!tasaCop) {
       return res.status(400).json({ mensaje: 'Debes cargar una tasa COP antes de crear productos' });
+    }
+
+    // Resolver código (autogenerado si viene vacío, validado si es manual)
+    let codigoFinal;
+    try {
+      codigoFinal = await resolverCodigo({ tabla: 'productos', prefijo: 'PRD', codigoInput: codigo });
+    } catch (e) {
+      return res.status(e.status || 500).json({ mensaje: e.mensaje || 'Error resolviendo código' });
     }
 
     const usarManual = bool(usar_precio_manual);
@@ -169,8 +178,8 @@ const crearProducto = async (req, res) => {
      costo_unitario_cop, porcentaje_ganancia, precio_manual_cop, usar_precio_manual,
      precio_final_cop, tasa_cambio_usada,
      costo_unitario, precio_manual, precio_final_usd, precio_usd,
-     imagen_url, imagen_public_id, tiene_toppings)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+     imagen_url, imagen_public_id, tiene_toppings, codigo)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
    RETURNING *`,
   [
     nombre,
@@ -189,7 +198,8 @@ const crearProducto = async (req, res) => {
     precio_final_usd,   // mismo valor para precio_usd
     imagen_url,
     imagen_public_id,
-    tieneToppings
+    tieneToppings,
+    codigoFinal
   ]
 );
 
@@ -218,7 +228,7 @@ const actualizarProducto = async (req, res) => {
   const {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
-    usar_precio_manual, tiene_toppings, toppings_ids
+    usar_precio_manual, tiene_toppings, toppings_ids, codigo
   } = req.body;
 
   try {
@@ -228,6 +238,16 @@ const actualizarProducto = async (req, res) => {
     }
 
     const productoActual = existe.rows[0];
+
+    // Si no mandan código, se conserva el actual (no se autogenera de nuevo al editar)
+    let codigoFinal = productoActual.codigo;
+    if (codigo !== undefined && String(codigo).trim() !== '' && codigo !== productoActual.codigo) {
+      try {
+        codigoFinal = await resolverCodigo({ tabla: 'productos', prefijo: 'PRD', codigoInput: codigo, excluirId: id });
+      } catch (e) {
+        return res.status(e.status || 500).json({ mensaje: e.mensaje || 'Error resolviendo código' });
+      }
+    }
 
     // La tasa COP es obligatoria para poder derivar los campos en USD
     const tasaCop = await obtenerTasaCopActiva();
@@ -287,8 +307,9 @@ const actualizarProducto = async (req, res) => {
         precio_usd = $14,
         imagen_url = $15,
         imagen_public_id = $16,
-        tiene_toppings = $17
-       WHERE id = $18
+        tiene_toppings = $17,
+        codigo = $18
+       WHERE id = $19
        RETURNING *`,
       [
         nombre || productoActual.nombre,
@@ -308,6 +329,7 @@ const actualizarProducto = async (req, res) => {
         imagen_url,
         imagen_public_id,
         tieneToppings,
+        codigoFinal,
         id
       ]
     );
