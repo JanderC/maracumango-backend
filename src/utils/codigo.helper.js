@@ -1,4 +1,4 @@
-const pool = require('../../config/db');
+const pool = require('../config/db');
 
 const REGEX_CODIGO = /^[A-Z0-9-]{2,30}$/;
 
