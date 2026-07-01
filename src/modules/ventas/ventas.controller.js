@@ -302,6 +302,87 @@ const crearVenta = async (req, res) => {
 
     await client.query('COMMIT');
 
+    // ── Descuento de inventario (fuera del commit principal para no bloquear la venta) ──
+    // Se procesa en una transacción separada; si falla no revierte la venta.
+    // Stock negativo se permite pero genera alerta en stock_alertas.
+    try {
+      const clientInv = await pool.connect();
+      try {
+        await clientInv.query('BEGIN');
+
+        for (const item of itemsProcesados) {
+          // Receta del producto
+          const recetaProducto = await clientInv.query(
+            `SELECT pi.*, i.nombre AS insumo_nombre
+             FROM producto_insumos pi
+             JOIN inventario i ON pi.inventario_id = i.id
+             WHERE pi.producto_id = $1`,
+            [item.producto_id]
+          );
+
+          for (const ins of recetaProducto.rows) {
+            const totalDescontar = parseFloat(ins.cantidad_requerida) * item.cantidad;
+            const stockRes = await clientInv.query(
+              `UPDATE inventario SET cantidad = cantidad - $1 WHERE id = $2 RETURNING cantidad, nombre`,
+              [totalDescontar, ins.inventario_id]
+            );
+            const stockResultante = parseFloat(stockRes.rows[0].cantidad);
+            if (stockResultante < 0) {
+              await clientInv.query(
+                `INSERT INTO stock_alertas (venta_id, inventario_id, inventario_nombre, cantidad_descontada, stock_resultante, mensaje)
+                 VALUES ($1, $2, $3, $4, $5, $6)`,
+                [
+                  venta.id, ins.inventario_id, stockRes.rows[0].nombre,
+                  totalDescontar, stockResultante,
+                  `Stock insuficiente al vender producto #${item.producto_id} × ${item.cantidad}. Stock resultante: ${stockResultante}`
+                ]
+              );
+            }
+          }
+
+          // Receta de cada topping del item
+          for (const topping of item.toppings) {
+            const recetaTopping = await clientInv.query(
+              `SELECT ti.*, i.nombre AS insumo_nombre
+               FROM topping_insumos ti
+               JOIN inventario i ON ti.inventario_id = i.id
+               WHERE ti.topping_id = $1`,
+              [topping.topping_id]
+            );
+
+            for (const ins of recetaTopping.rows) {
+              const totalDescontar = parseFloat(ins.cantidad_requerida) * item.cantidad;
+              const stockRes = await clientInv.query(
+                `UPDATE inventario SET cantidad = cantidad - $1 WHERE id = $2 RETURNING cantidad, nombre`,
+                [totalDescontar, ins.inventario_id]
+              );
+              const stockResultante = parseFloat(stockRes.rows[0].cantidad);
+              if (stockResultante < 0) {
+                await clientInv.query(
+                  `INSERT INTO stock_alertas (venta_id, inventario_id, inventario_nombre, cantidad_descontada, stock_resultante, mensaje)
+                   VALUES ($1, $2, $3, $4, $5, $6)`,
+                  [
+                    venta.id, ins.inventario_id, stockRes.rows[0].nombre,
+                    totalDescontar, stockResultante,
+                    `Stock insuficiente al descontar topping #${topping.topping_id} × ${item.cantidad}. Stock resultante: ${stockResultante}`
+                  ]
+                );
+              }
+            }
+          }
+        }
+
+        await clientInv.query('COMMIT');
+      } catch (eInv) {
+        await clientInv.query('ROLLBACK');
+        console.error('Error descontando inventario (venta registrada igual):', eInv.message);
+      } finally {
+        clientInv.release();
+      }
+    } catch (ePool) {
+      console.error('No se pudo conectar para descontar inventario:', ePool.message);
+    }
+
     // Retornar venta completa
     const ventaCompleta = await obtenerVentaCompleta(venta.id);
 

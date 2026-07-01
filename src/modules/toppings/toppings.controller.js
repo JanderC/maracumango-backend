@@ -173,11 +173,89 @@ const eliminarTopping = async (req, res) => {
   }
 };
 
+// ── Receta de insumos ──────────────────────────────────────────────────────
+
+const obtenerRecetaTopping = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const resultado = await pool.query(
+      `SELECT ti.*, i.nombre AS insumo_nombre, i.cantidad AS stock_actual, i.unidad_medida AS unidad_inventario
+       FROM topping_insumos ti
+       JOIN inventario i ON ti.inventario_id = i.id
+       WHERE ti.topping_id = $1
+       ORDER BY i.nombre ASC`,
+      [id]
+    );
+    res.json({ insumos: resultado.rows });
+  } catch (err) {
+    console.error('Error obteniendo receta topping:', err.message);
+    res.status(500).json({ mensaje: 'Error interno del servidor' });
+  }
+};
+
+const guardarRecetaTopping = async (req, res) => {
+  const { id } = req.params;
+  const { insumos } = req.body;
+
+  try {
+    const existe = await pool.query('SELECT id FROM toppings WHERE id = $1', [id]);
+    if (existe.rows.length === 0) {
+      return res.status(404).json({ mensaje: 'Topping no encontrado' });
+    }
+    if (!Array.isArray(insumos)) {
+      return res.status(400).json({ mensaje: 'insumos debe ser un array' });
+    }
+    for (const ins of insumos) {
+      if (!ins.inventario_id || ins.cantidad_requerida === undefined || parseFloat(ins.cantidad_requerida) <= 0) {
+        return res.status(400).json({ mensaje: 'Cada insumo requiere inventario_id y cantidad_requerida > 0' });
+      }
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM topping_insumos WHERE topping_id = $1', [id]);
+      for (const ins of insumos) {
+        await client.query(
+          `INSERT INTO topping_insumos (topping_id, inventario_id, cantidad_requerida, unidad, notas)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (topping_id, inventario_id) DO UPDATE
+             SET cantidad_requerida = EXCLUDED.cantidad_requerida,
+                 unidad = EXCLUDED.unidad,
+                 notas = EXCLUDED.notas`,
+          [id, ins.inventario_id, parseFloat(ins.cantidad_requerida), ins.unidad || null, ins.notas || null]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK');
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    const actualizada = await pool.query(
+      `SELECT ti.*, i.nombre AS insumo_nombre, i.cantidad AS stock_actual, i.unidad_medida AS unidad_inventario
+       FROM topping_insumos ti
+       JOIN inventario i ON ti.inventario_id = i.id
+       WHERE ti.topping_id = $1
+       ORDER BY i.nombre ASC`,
+      [id]
+    );
+    res.json({ mensaje: 'Receta guardada exitosamente', insumos: actualizada.rows });
+  } catch (err) {
+    console.error('Error guardando receta topping:', err.message);
+    res.status(500).json({ mensaje: 'Error interno del servidor' });
+  }
+};
+
 module.exports = {
   obtenerToppings,
   obtenerTopping,
   crearTopping,
   actualizarTopping,
   toggleActivoTopping,
-  eliminarTopping
+  eliminarTopping,
+  obtenerRecetaTopping,
+  guardarRecetaTopping
 };

@@ -7,7 +7,9 @@ const {
   crearProducto,
   actualizarProducto,
   toggleActivoProducto,
-  eliminarProducto
+  eliminarProducto,
+  obtenerRecetaProducto,
+  guardarRecetaProducto
 } = require('./productos.controller');
 const { verificarToken } = require('../../middlewares/auth');
 const { verificarRol } = require('../../middlewares/roles');
@@ -23,5 +25,9 @@ router.post('/', verificarToken, verificarRol('admin'), upload.single('imagen'),
 router.put('/:id', verificarToken, verificarRol('admin'), upload.single('imagen'), actualizarProducto);
 router.patch('/:id/toggle', verificarToken, verificarRol('admin'), toggleActivoProducto);
 router.delete('/:id', verificarToken, verificarRol('admin'), eliminarProducto);
+
+// Receta de insumos
+router.get('/:id/receta', verificarToken, verificarRol('admin'), obtenerRecetaProducto);
+router.post('/:id/receta', verificarToken, verificarRol('admin'), guardarRecetaProducto);
 
 module.exports = router;
