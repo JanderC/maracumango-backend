@@ -32,7 +32,7 @@ app.use('/api/cuentas-bancarias', require('./modules/cuentas_bancarias/cuentas_b
 app.use('/api/ventas', require('./modules/ventas/ventas.routes'));
 app.use('/api/reportes', require('./modules/reportes/reportes.routes'));
 app.use('/api/inventario', require('./modules/inventario/inventario.routes'));
-app.use('/api/menu', require('./modules/menu/Menu.routes'));
+app.use('/api/menu', require('./modules/menu/menu.routes'));
 
 // Ruta base
 app.get('/', (req, res) => {
