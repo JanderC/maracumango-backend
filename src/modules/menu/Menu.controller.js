@@ -18,7 +18,7 @@ const obtenerProductosMenu = async (req, res) => {
     res.json({ productos: resultado.rows });
   } catch (err) {
     console.error('Error obteniendo productos del menú:', err.message);
-    res.status(500).json({ mensaje: 'Error interno del servidor' });
+    res.status(500).json({ mensaje: 'Error interno del servidores' });
   }
 };
 
