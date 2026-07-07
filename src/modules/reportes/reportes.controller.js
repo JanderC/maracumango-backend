@@ -23,18 +23,26 @@ const resumenGeneral = async (req, res) => {
     }
 
     // Totales en COP (nativo) y USD (derivado)
+    // Nota: las ganancias se agregan en una subconsulta agrupada por venta_id
+    // ANTES de unir con ventas, para evitar que el JOIN con items_venta
+    // multiplique (fan-out) el total_cop/total_usd de la venta según su
+    // cantidad de productos.
     const totales = await pool.query(
       `SELECT
         COUNT(DISTINCT v.id)                        AS total_ventas,
         COALESCE(SUM(v.total_cop), 0)               AS total_ingresos_cop,
-        COALESCE(SUM(v.total_usd), 0)               AS total_ingresos_usd,
-        COALESCE(SUM(iv.ganancia_cop), 0)           AS total_ganancias_cop,
-        COALESCE(SUM(iv.ganancia_usd), 0)           AS total_ganancias_usd,
+        COALESCE(SUM(v.total_usd), 0)                AS total_ingresos_usd,
+        COALESCE(SUM(g.ganancia_cop), 0)            AS total_ganancias_cop,
+        COALESCE(SUM(g.ganancia_usd), 0)            AS total_ganancias_usd,
         COALESCE(AVG(v.total_cop), 0)               AS ticket_promedio_cop,
         COALESCE(AVG(v.total_usd), 0)               AS ticket_promedio_usd
        FROM ventas v
-       LEFT JOIN items_venta iv ON iv.venta_id = v.id
-       WHERE v.tipo_pago != 'anulada' ${filtroFecha}`,
+       LEFT JOIN (
+         SELECT venta_id, SUM(ganancia_cop) AS ganancia_cop, SUM(ganancia_usd) AS ganancia_usd
+         FROM items_venta
+         GROUP BY venta_id
+       ) g ON g.venta_id = v.id
+       WHERE COALESCE(v.anulada, false) = false ${filtroFecha}`,
       params
     );
 
@@ -47,7 +55,7 @@ const resumenGeneral = async (req, res) => {
               SUM(total_cop)    AS total_cop,
               SUM(total_usd)    AS total_usd
        FROM ventas
-       WHERE tipo_pago != 'anulada' ${filtroSinAlias}
+       WHERE COALESCE(anulada, false) = false ${filtroSinAlias}
        GROUP BY moneda_pago
        ORDER BY cantidad DESC`,
       params
@@ -60,7 +68,7 @@ const resumenGeneral = async (req, res) => {
               SUM(total_cop) AS total_cop,
               SUM(total_usd) AS total_usd
        FROM ventas
-       WHERE tipo_pago != 'anulada' ${filtroSinAlias}
+       WHERE COALESCE(anulada, false) = false ${filtroSinAlias}
        GROUP BY tipo_pago`,
       params
     );
@@ -77,7 +85,7 @@ const resumenGeneral = async (req, res) => {
        FROM items_venta iv
        LEFT JOIN productos p ON iv.producto_id = p.id
        LEFT JOIN ventas v ON iv.venta_id = v.id
-       WHERE v.tipo_pago != 'anulada' ${filtroFecha}
+       WHERE COALESCE(v.anulada, false) = false ${filtroFecha}
        GROUP BY p.id, p.nombre, p.codigo
        ORDER BY unidades_vendidas DESC
        LIMIT 10`,
@@ -108,7 +116,7 @@ const ventasPorDia = async (req, res) => {
 
   try {
     const params = [];
-    let filtro = "WHERE v.tipo_pago != 'anulada'";
+    let filtro = "WHERE COALESCE(v.anulada, false) = false";
     let contador = 1;
 
     if (fecha_inicio) {
@@ -128,10 +136,14 @@ const ventasPorDia = async (req, res) => {
         COUNT(DISTINCT v.id)     AS total_ventas,
         SUM(v.total_cop)         AS total_cop,
         SUM(v.total_usd)         AS total_usd,
-        SUM(iv.ganancia_cop)     AS ganancia_cop,
-        SUM(iv.ganancia_usd)     AS ganancia_usd
+        COALESCE(SUM(g.ganancia_cop), 0) AS ganancia_cop,
+        COALESCE(SUM(g.ganancia_usd), 0) AS ganancia_usd
        FROM ventas v
-       LEFT JOIN items_venta iv ON iv.venta_id = v.id
+       LEFT JOIN (
+         SELECT venta_id, SUM(ganancia_cop) AS ganancia_cop, SUM(ganancia_usd) AS ganancia_usd
+         FROM items_venta
+         GROUP BY venta_id
+       ) g ON g.venta_id = v.id
        ${filtro}
        GROUP BY DATE(v.creado_en)
        ORDER BY fecha DESC`,
@@ -181,7 +193,7 @@ const exportarVentasExcel = async (req, res) => {
 
   try {
     const params = [];
-    let filtro = "WHERE v.tipo_pago != 'anulada'";
+    let filtro = "WHERE COALESCE(v.anulada, false) = false";
     let contador = 1;
 
     if (fecha_inicio) { filtro += ` AND DATE(v.creado_en) >= $${contador}`; params.push(fecha_inicio); contador++; }
@@ -255,7 +267,7 @@ const exportarVentasPDF = async (req, res) => {
 
   try {
     const params = [];
-    let filtro = "WHERE v.tipo_pago != 'anulada'";
+    let filtro = "WHERE COALESCE(v.anulada, false) = false";
     let contador = 1;
 
     if (fecha_inicio) { filtro += ` AND DATE(v.creado_en) >= $${contador}`; params.push(fecha_inicio); contador++; }
