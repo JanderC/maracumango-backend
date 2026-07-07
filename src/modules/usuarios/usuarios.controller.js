@@ -40,8 +40,8 @@ const crearUsuario = async (req, res) => {
       return res.status(400).json({ mensaje: 'Todos los campos son requeridos' });
     }
 
-    if (!['admin', 'cliente'].includes(rol)) {
-      return res.status(400).json({ mensaje: 'Rol inválido. Use admin o cliente' });
+    if (!['admin', 'vendedor', 'cliente'].includes(rol)) {
+      return res.status(400).json({ mensaje: 'Rol inválido. Use admin, vendedor o cliente' });
     }
 
     const existe = await pool.query('SELECT id FROM usuarios WHERE correo = $1', [correo]);
@@ -78,6 +78,10 @@ const actualizarUsuario = async (req, res) => {
     const existe = await pool.query('SELECT id FROM usuarios WHERE id = $1', [id]);
     if (existe.rows.length === 0) {
       return res.status(404).json({ mensaje: 'Usuario no encontrado' });
+    }
+
+    if (rol !== undefined && !['admin', 'vendedor', 'cliente'].includes(rol)) {
+      return res.status(400).json({ mensaje: 'Rol inválido. Use admin, vendedor o cliente' });
     }
 
     let contrasenaHash = null;
