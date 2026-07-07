@@ -72,7 +72,7 @@ const obtenerProductosActivos = async (req, res) => {
               c.nombre AS categoria
        FROM productos p
        LEFT JOIN categorias c ON p.categoria_id = c.id
-       WHERE p.activo = true
+       WHERE COALESCE(p.activo, true) = true
        ORDER BY c.nombre, p.nombre`
     );
     res.json({ productos: resultado.rows });
@@ -105,7 +105,7 @@ const obtenerProducto = async (req, res) => {
       `SELECT t.id, t.nombre, t.precio_usd, t.precio_bs, t.precio_cop
        FROM toppings t
        INNER JOIN producto_toppings pt ON t.id = pt.topping_id
-       WHERE pt.producto_id = $1 AND t.activo = true`,
+       WHERE pt.producto_id = $1 AND COALESCE(t.activo, true) = true`,
       [id]
     );
 
@@ -357,7 +357,7 @@ const toggleActivoProducto = async (req, res) => {
   const { id } = req.params;
   try {
     const resultado = await pool.query(
-      'UPDATE productos SET activo = NOT activo WHERE id = $1 RETURNING id, nombre, activo', [id]
+      'UPDATE productos SET activo = NOT COALESCE(activo, true) WHERE id = $1 RETURNING id, nombre, activo', [id]
     );
     if (resultado.rows.length === 0) {
       return res.status(404).json({ mensaje: 'Producto no encontrado' });

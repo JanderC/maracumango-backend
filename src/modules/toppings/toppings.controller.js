@@ -144,7 +144,7 @@ const toggleActivoTopping = async (req, res) => {
   const { id } = req.params;
   try {
     const resultado = await pool.query(
-      'UPDATE toppings SET activo = NOT activo WHERE id = $1 RETURNING *', [id]
+      'UPDATE toppings SET activo = NOT COALESCE(activo, true) WHERE id = $1 RETURNING *', [id]
     );
     if (resultado.rows.length === 0) {
       return res.status(404).json({ mensaje: 'Topping no encontrado' });

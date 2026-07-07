@@ -173,7 +173,7 @@ const crearVenta = async (req, res) => {
 
       // Obtener producto — precio_final_cop es la fuente de verdad real
       const producto = await client.query(
-        'SELECT id, nombre, precio_final_cop, costo_unitario_cop FROM productos WHERE id = $1 AND activo = true',
+        'SELECT id, nombre, precio_final_cop, costo_unitario_cop FROM productos WHERE id = $1 AND COALESCE(activo, true) = true',
         [producto_id]
       );
 
@@ -191,7 +191,7 @@ const crearVenta = async (req, res) => {
       if (toppings_ids && toppings_ids.length > 0) {
         for (const topping_id of toppings_ids) {
           const topping = await client.query(
-            'SELECT id, nombre, precio_cop FROM toppings WHERE id = $1 AND activo = true',
+            'SELECT id, nombre, precio_cop FROM toppings WHERE id = $1 AND COALESCE(activo, true) = true',
             [topping_id]
           );
           if (topping.rows.length > 0) {
