@@ -1,4 +1,5 @@
 const pool = require('../../config/db');
+const bcrypt = require('bcryptjs');
 
 const obtenerVentas = async (req, res) => {
   try {
@@ -7,12 +8,14 @@ const obtenerVentas = async (req, res) => {
     let query = `
       SELECT v.*,
              u.nombre AS cajero,
+             ua.nombre AS anulado_por_nombre,
              cb.nombre_banco,
              cb.titular_cuenta,
              cb.telefono AS banco_telefono,
              cb.moneda AS banco_moneda
       FROM ventas v
       LEFT JOIN usuarios u ON v.usuario_id = u.id
+      LEFT JOIN usuarios ua ON v.anulada_por = ua.id
       LEFT JOIN cuentas_bancarias cb ON v.cuenta_bancaria_id = cb.id
       WHERE 1=1
     `;
@@ -61,6 +64,7 @@ const obtenerVenta = async (req, res) => {
     const venta = await pool.query(
       `SELECT v.*,
               u.nombre AS cajero,
+              ua.nombre AS anulado_por_nombre,
               cb.nombre_banco,
               cb.numero_cuenta,
               cb.titular_cuenta,
@@ -68,6 +72,7 @@ const obtenerVenta = async (req, res) => {
               cb.moneda AS banco_moneda
        FROM ventas v
        LEFT JOIN usuarios u ON v.usuario_id = u.id
+       LEFT JOIN usuarios ua ON v.anulada_por = ua.id
        LEFT JOIN cuentas_bancarias cb ON v.cuenta_bancaria_id = cb.id
        WHERE v.id = $1`,
       [id]
@@ -443,21 +448,43 @@ const obtenerVentaCompleta = async (venta_id) => {
 
 const anularVenta = async (req, res) => {
   const { id } = req.params;
-  const { motivo } = req.body;
+  const { motivo, contrasena } = req.body;
 
   try {
+    if (!motivo || !motivo.trim()) {
+      return res.status(400).json({ mensaje: 'Debes indicar el motivo de la anulación' });
+    }
+    if (!contrasena) {
+      return res.status(400).json({ mensaje: 'Debes confirmar con tu contraseña para anular' });
+    }
+
+    // Verificar la contraseña del admin logueado (reautenticación, no solo el token)
+    const usuarioRes = await pool.query('SELECT contrasena FROM usuarios WHERE id = $1', [req.usuario.id]);
+    if (usuarioRes.rows.length === 0) {
+      return res.status(401).json({ mensaje: 'Usuario no encontrado' });
+    }
+    const contrasenaValida = await bcrypt.compare(contrasena, usuarioRes.rows[0].contrasena);
+    if (!contrasenaValida) {
+      return res.status(401).json({ mensaje: 'Contraseña incorrecta. La venta no fue anulada' });
+    }
+
     const existe = await pool.query('SELECT * FROM ventas WHERE id = $1', [id]);
     if (existe.rows.length === 0) {
       return res.status(404).json({ mensaje: 'Venta no encontrada' });
     }
+    if (existe.rows[0].anulada) {
+      return res.status(400).json({ mensaje: 'Esta venta ya había sido anulada anteriormente' });
+    }
 
     const resultado = await pool.query(
       `UPDATE ventas SET
-        tipo_pago = 'anulada',
-        notas = CONCAT(COALESCE(notas, ''), ' | ANULADA: ', $1)
-       WHERE id = $2
+        anulada = true,
+        motivo_anulacion = $1,
+        anulada_en = NOW(),
+        anulada_por = $2
+       WHERE id = $3
        RETURNING *`,
-      [motivo || 'Sin motivo', id]
+      [motivo.trim(), req.usuario.id, id]
     );
 
     res.json({
