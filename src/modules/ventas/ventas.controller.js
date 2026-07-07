@@ -127,6 +127,7 @@ const crearVenta = async (req, res) => {
       tipo_pago,
       cuenta_bancaria_id,
       tasa_cambio_usada, // tasa BS/USD, solo se usa si moneda_pago === 'BS'
+      monto_recibido, // solo aplica si tipo_pago === 'efectivo' — en la moneda_pago elegida
       notas,
       items // [{ producto_id, cantidad, toppings_ids: [] }]
     } = req.body;
@@ -147,6 +148,10 @@ const crearVenta = async (req, res) => {
 
     if (tipo_pago === 'transferencia' && !cuenta_bancaria_id) {
       return res.status(400).json({ mensaje: 'Debe seleccionar una cuenta bancaria para transferencia' });
+    }
+
+    if (tipo_pago === 'efectivo' && (monto_recibido === undefined || monto_recibido === null || monto_recibido === '')) {
+      return res.status(400).json({ mensaje: 'Debe indicar el monto recibido en efectivo' });
     }
 
     if (monedaPago === 'BS' && !tasa_cambio_usada) {
@@ -249,11 +254,30 @@ const crearVenta = async (req, res) => {
       total_pagado = parseFloat((total_usd * parseFloat(tasa_cambio_usada)).toFixed(2));
     }
 
+    // Validar y calcular el vuelto (solo aplica a pagos en efectivo)
+    let montoRecibidoNum = null;
+    let vuelto = null;
+    if (tipo_pago === 'efectivo') {
+      montoRecibidoNum = parseFloat(monto_recibido);
+      if (isNaN(montoRecibidoNum) || montoRecibidoNum < 0) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ mensaje: 'El monto recibido no es válido' });
+      }
+      // Tolerancia mínima por redondeos de punto flotante
+      if (montoRecibidoNum < total_pagado - 0.01) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          mensaje: `El monto recibido (${montoRecibidoNum}) es insuficiente. Total a cobrar: ${total_pagado} ${monedaPago}`
+        });
+      }
+      vuelto = parseFloat((montoRecibidoNum - total_pagado).toFixed(2));
+    }
+
     // Insertar venta
     const ventaResult = await client.query(
       `INSERT INTO ventas
-        (usuario_id, total_usd, total_cop, total_pagado, moneda_pago, tipo_pago, cuenta_bancaria_id, tasa_cambio_usada, notas)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        (usuario_id, total_usd, total_cop, total_pagado, moneda_pago, tipo_pago, cuenta_bancaria_id, tasa_cambio_usada, monto_recibido, vuelto, notas)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
         req.usuario.id,
@@ -264,6 +288,8 @@ const crearVenta = async (req, res) => {
         tipo_pago,
         cuenta_bancaria_id || null,
         monedaPago === 'BS' ? tasa_cambio_usada : tasaCopPorUsd,
+        montoRecibidoNum,
+        vuelto,
         notas || null
       ]
     );
