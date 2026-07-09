@@ -46,6 +46,7 @@ const obtenerProductos = async (req, res) => {
               c.nombre AS categoria,
               i.nombre AS inventario_nombre,
               i.cantidad AS stock_inventario,
+              padre.nombre AS producto_padre_nombre,
               ROUND(
                 CASE WHEN p.costo_unitario_cop > 0
                   THEN ((p.precio_final_cop - p.costo_unitario_cop) / p.costo_unitario_cop) * 100
@@ -55,6 +56,7 @@ const obtenerProductos = async (req, res) => {
        FROM productos p
        LEFT JOIN categorias c ON p.categoria_id = c.id
        LEFT JOIN inventario i ON p.inventario_id = i.id
+       LEFT JOIN productos padre ON p.producto_padre_id = padre.id
        ORDER BY p.creado_en DESC`
     );
     res.json({ productos: resultado.rows });
@@ -69,15 +71,38 @@ const obtenerProductosActivos = async (req, res) => {
     const resultado = await pool.query(
       `SELECT p.id, p.nombre, p.descripcion, p.precio_final_cop, p.precio_final_usd,
               p.imagen_url, p.tiene_toppings, p.categoria_id,
-              c.nombre AS categoria
+              c.nombre AS categoria,
+              EXISTS(
+                SELECT 1 FROM productos hijo
+                WHERE hijo.producto_padre_id = p.id AND COALESCE(hijo.activo, true) = true
+              ) AS tiene_variantes
        FROM productos p
        LEFT JOIN categorias c ON p.categoria_id = c.id
-       WHERE COALESCE(p.activo, true) = true
+       WHERE COALESCE(p.activo, true) = true AND p.producto_padre_id IS NULL
        ORDER BY c.nombre, p.nombre`
     );
     res.json({ productos: resultado.rows });
   } catch (err) {
     console.error('Error obteniendo productos activos:', err.message);
+    res.status(500).json({ mensaje: 'Error interno del servidor' });
+  }
+};
+
+// Variantes (productos secundarios) de un producto principal — para el POS/Catálogo
+const obtenerVariantesProducto = async (req, res) => {
+  const { id } = req.params;
+  try {
+    const resultado = await pool.query(
+      `SELECT p.id, p.nombre, p.descripcion, p.precio_final_cop, p.precio_final_usd,
+              p.imagen_url, p.tiene_toppings, p.categoria_id
+       FROM productos p
+       WHERE p.producto_padre_id = $1 AND COALESCE(p.activo, true) = true
+       ORDER BY p.nombre ASC`,
+      [id]
+    );
+    res.json({ variantes: resultado.rows });
+  } catch (err) {
+    console.error('Error obteniendo variantes:', err.message);
     res.status(500).json({ mensaje: 'Error interno del servidor' });
   }
 };
@@ -122,7 +147,8 @@ const crearProducto = async (req, res) => {
   const {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
-    usar_precio_manual, tiene_toppings, toppings_ids, codigo
+    usar_precio_manual, tiene_toppings, toppings_ids, codigo,
+    producto_padre_id
   } = req.body;
 
   try {
@@ -131,6 +157,18 @@ const crearProducto = async (req, res) => {
     }
     if (!costo_unitario_cop || costo_unitario_cop === '') {
       return res.status(400).json({ mensaje: 'El costo unitario (COP) es requerido' });
+    }
+
+    // Si se marca como producto secundario, validar que el padre exista y sea a su vez un producto principal
+    let padreId = num(producto_padre_id);
+    if (padreId) {
+      const padre = await pool.query('SELECT id, producto_padre_id FROM productos WHERE id = $1', [padreId]);
+      if (padre.rows.length === 0) {
+        return res.status(400).json({ mensaje: 'El producto principal seleccionado no existe' });
+      }
+      if (padre.rows[0].producto_padre_id) {
+        return res.status(400).json({ mensaje: 'Ese producto ya es secundario de otro; no se puede anidar' });
+      }
     }
 
     // La tasa COP es obligatoria para poder derivar los campos en USD
@@ -178,8 +216,8 @@ const crearProducto = async (req, res) => {
      costo_unitario_cop, porcentaje_ganancia, precio_manual_cop, usar_precio_manual,
      precio_final_cop, tasa_cambio_usada,
      costo_unitario, precio_manual, precio_final_usd, precio_usd,
-     imagen_url, imagen_public_id, tiene_toppings, codigo)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
+     imagen_url, imagen_public_id, tiene_toppings, codigo, producto_padre_id)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
    RETURNING *`,
   [
     nombre,
@@ -199,7 +237,8 @@ const crearProducto = async (req, res) => {
     imagen_url,
     imagen_public_id,
     tieneToppings,
-    codigoFinal
+    codigoFinal,
+    padreId
   ]
 );
 
@@ -228,7 +267,8 @@ const actualizarProducto = async (req, res) => {
   const {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
-    usar_precio_manual, tiene_toppings, toppings_ids, codigo
+    usar_precio_manual, tiene_toppings, toppings_ids, codigo,
+    producto_padre_id
   } = req.body;
 
   try {
@@ -238,6 +278,29 @@ const actualizarProducto = async (req, res) => {
     }
 
     const productoActual = existe.rows[0];
+
+    // Validar producto_padre_id si viene en la petición
+    let padreId = productoActual.producto_padre_id;
+    if (producto_padre_id !== undefined) {
+      padreId = num(producto_padre_id);
+      if (padreId) {
+        if (padreId === parseInt(id)) {
+          return res.status(400).json({ mensaje: 'Un producto no puede ser su propio producto principal' });
+        }
+        const padre = await pool.query('SELECT id, producto_padre_id FROM productos WHERE id = $1', [padreId]);
+        if (padre.rows.length === 0) {
+          return res.status(400).json({ mensaje: 'El producto principal seleccionado no existe' });
+        }
+        if (padre.rows[0].producto_padre_id) {
+          return res.status(400).json({ mensaje: 'Ese producto ya es secundario de otro; no se puede anidar' });
+        }
+        // Si este producto ya tiene variantes propias, no puede convertirse en secundario de otro
+        const tieneHijos = await pool.query('SELECT id FROM productos WHERE producto_padre_id = $1 LIMIT 1', [id]);
+        if (tieneHijos.rows.length > 0) {
+          return res.status(400).json({ mensaje: 'Este producto ya tiene variantes propias; no puede convertirse en secundario' });
+        }
+      }
+    }
 
     // Si no mandan código, se conserva el actual (no se autogenera de nuevo al editar)
     let codigoFinal = productoActual.codigo;
@@ -308,8 +371,9 @@ const actualizarProducto = async (req, res) => {
         imagen_url = $15,
         imagen_public_id = $16,
         tiene_toppings = $17,
-        codigo = $18
-       WHERE id = $19
+        codigo = $18,
+        producto_padre_id = $19
+       WHERE id = $20
        RETURNING *`,
       [
         nombre || productoActual.nombre,
@@ -330,6 +394,7 @@ const actualizarProducto = async (req, res) => {
         imagen_public_id,
         tieneToppings,
         codigoFinal,
+        padreId,
         id
       ]
     );
@@ -481,6 +546,7 @@ const guardarRecetaProducto = async (req, res) => {
 module.exports = {
   obtenerProductos,
   obtenerProductosActivos,
+  obtenerVariantesProducto,
   obtenerProducto,
   crearProducto,
   actualizarProducto,

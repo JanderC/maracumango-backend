@@ -3,6 +3,7 @@ const router = express.Router();
 const {
   obtenerProductos,
   obtenerProductosActivos,
+  obtenerVariantesProducto,
   obtenerProducto,
   crearProducto,
   actualizarProducto,
@@ -15,8 +16,9 @@ const { verificarToken } = require('../../middlewares/auth');
 const { verificarRol } = require('../../middlewares/roles');
 const { upload } = require('../../config/cloudinary');
 
-// Públicas con token (admin y cliente)
+// Públicas con token (admin, vendedor y cliente)
 router.get('/activos', verificarToken, obtenerProductosActivos);
+router.get('/:id/variantes', verificarToken, obtenerVariantesProducto);
 router.get('/:id', verificarToken, obtenerProducto);
 
 // Solo admin
