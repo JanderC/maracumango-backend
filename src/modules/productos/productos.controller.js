@@ -47,6 +47,7 @@ const obtenerProductos = async (req, res) => {
               i.nombre AS inventario_nombre,
               i.cantidad AS stock_inventario,
               padre.nombre AS producto_padre_nombre,
+              cp.nombre AS carpeta_nombre,
               ROUND(
                 CASE WHEN p.costo_unitario_cop > 0
                   THEN ((p.precio_final_cop - p.costo_unitario_cop) / p.costo_unitario_cop) * 100
@@ -57,6 +58,7 @@ const obtenerProductos = async (req, res) => {
        LEFT JOIN categorias c ON p.categoria_id = c.id
        LEFT JOIN inventario i ON p.inventario_id = i.id
        LEFT JOIN productos padre ON p.producto_padre_id = padre.id
+       LEFT JOIN carpetas_productos cp ON p.carpeta_id = cp.id
        ORDER BY p.creado_en DESC`
     );
     res.json({ productos: resultado.rows });
@@ -78,7 +80,9 @@ const obtenerProductosActivos = async (req, res) => {
               ) AS tiene_variantes
        FROM productos p
        LEFT JOIN categorias c ON p.categoria_id = c.id
-       WHERE COALESCE(p.activo, true) = true AND p.producto_padre_id IS NULL
+       WHERE COALESCE(p.activo, true) = true
+         AND p.producto_padre_id IS NULL
+         AND p.carpeta_id IS NULL
        ORDER BY c.nombre, p.nombre`
     );
     res.json({ productos: resultado.rows });
@@ -148,7 +152,7 @@ const crearProducto = async (req, res) => {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
     usar_precio_manual, tiene_toppings, toppings_ids, codigo,
-    producto_padre_id
+    producto_padre_id, carpeta_id
   } = req.body;
 
   try {
@@ -168,6 +172,15 @@ const crearProducto = async (req, res) => {
       }
       if (padre.rows[0].producto_padre_id) {
         return res.status(400).json({ mensaje: 'Ese producto ya es secundario de otro; no se puede anidar' });
+      }
+    }
+
+    // Si se asigna a una carpeta, validar que exista
+    let carpetaId = num(carpeta_id);
+    if (carpetaId) {
+      const carpeta = await pool.query('SELECT id FROM carpetas_productos WHERE id = $1', [carpetaId]);
+      if (carpeta.rows.length === 0) {
+        return res.status(400).json({ mensaje: 'La carpeta seleccionada no existe' });
       }
     }
 
@@ -216,8 +229,8 @@ const crearProducto = async (req, res) => {
      costo_unitario_cop, porcentaje_ganancia, precio_manual_cop, usar_precio_manual,
      precio_final_cop, tasa_cambio_usada,
      costo_unitario, precio_manual, precio_final_usd, precio_usd,
-     imagen_url, imagen_public_id, tiene_toppings, codigo, producto_padre_id)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+     imagen_url, imagen_public_id, tiene_toppings, codigo, producto_padre_id, carpeta_id)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
    RETURNING *`,
   [
     nombre,
@@ -238,7 +251,8 @@ const crearProducto = async (req, res) => {
     imagen_public_id,
     tieneToppings,
     codigoFinal,
-    padreId
+    padreId,
+    carpetaId
   ]
 );
 
@@ -268,7 +282,7 @@ const actualizarProducto = async (req, res) => {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
     usar_precio_manual, tiene_toppings, toppings_ids, codigo,
-    producto_padre_id
+    producto_padre_id, carpeta_id
   } = req.body;
 
   try {
@@ -298,6 +312,18 @@ const actualizarProducto = async (req, res) => {
         const tieneHijos = await pool.query('SELECT id FROM productos WHERE producto_padre_id = $1 LIMIT 1', [id]);
         if (tieneHijos.rows.length > 0) {
           return res.status(400).json({ mensaje: 'Este producto ya tiene variantes propias; no puede convertirse en secundario' });
+        }
+      }
+    }
+
+    // Validar carpeta_id si viene en la petición
+    let carpetaId = productoActual.carpeta_id;
+    if (carpeta_id !== undefined) {
+      carpetaId = num(carpeta_id);
+      if (carpetaId) {
+        const carpeta = await pool.query('SELECT id FROM carpetas_productos WHERE id = $1', [carpetaId]);
+        if (carpeta.rows.length === 0) {
+          return res.status(400).json({ mensaje: 'La carpeta seleccionada no existe' });
         }
       }
     }
@@ -372,8 +398,9 @@ const actualizarProducto = async (req, res) => {
         imagen_public_id = $16,
         tiene_toppings = $17,
         codigo = $18,
-        producto_padre_id = $19
-       WHERE id = $20
+        producto_padre_id = $19,
+        carpeta_id = $20
+       WHERE id = $21
        RETURNING *`,
       [
         nombre || productoActual.nombre,
@@ -395,6 +422,7 @@ const actualizarProducto = async (req, res) => {
         tieneToppings,
         codigoFinal,
         padreId,
+        carpetaId,
         id
       ]
     );

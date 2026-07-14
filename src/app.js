@@ -33,7 +33,7 @@ app.use('/api/ventas', require('./modules/ventas/ventas.routes'));
 app.use('/api/reportes', require('./modules/reportes/reportes.routes'));
 app.use('/api/inventario', require('./modules/inventario/inventario.routes'));
 app.use('/api/menu', require('./modules/menu/menu.routes'));
-
+app.use('/api/carpetas', require('./modules/carpetas/carpetas.routes'));
 // Ruta base
 app.get('/', (req, res) => {
   res.json({ mensaje: '🥭 Maracu Mango API funcionando correctamente' });
