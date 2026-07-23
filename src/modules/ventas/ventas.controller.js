@@ -57,8 +57,17 @@ const obtenerVentas = async (req, res) => {
   }
 };
 
+// Quita los campos de ganancia de un item de venta cuando quien consulta
+// no es admin (el vendedor no debe ver márgenes/ganancias del negocio)
+const ocultarGananciaSiNoAdmin = (item, esAdmin) => {
+  if (esAdmin) return item;
+  const { ganancia_usd, ganancia_cop, costo_unitario_usd, costo_unitario_cop, ...resto } = item;
+  return resto;
+};
+
 const obtenerVenta = async (req, res) => {
   const { id } = req.params;
+  const esAdmin = req.usuario?.rol === 'admin';
 
   try {
     const venta = await pool.query(
@@ -79,7 +88,7 @@ const obtenerVenta = async (req, res) => {
     );
 
     if (venta.rows.length === 0) {
-      return res.status(404).json({ mensaje: 'Venta no encontrada' });
+      return res.status(404).json({ mensaje: 'Pedido no encontrado' });
     }
 
     const items = await pool.query(
@@ -106,10 +115,12 @@ const obtenerVenta = async (req, res) => {
       })
     );
 
+    const itemsFiltrados = itemsConToppings.map(item => ocultarGananciaSiNoAdmin(item, esAdmin));
+
     res.json({
       venta: {
         ...venta.rows[0],
-        items: itemsConToppings
+        items: itemsFiltrados
       }
     });
   } catch (err) {
@@ -414,11 +425,13 @@ const crearVenta = async (req, res) => {
       console.error('No se pudo conectar para descontar inventario:', ePool.message);
     }
 
-    // Retornar venta completa
+    // Retornar pedido completo (se oculta la ganancia si quien vende no es admin)
+    const esAdminCreador = req.usuario?.rol === 'admin';
     const ventaCompleta = await obtenerVentaCompleta(venta.id);
+    ventaCompleta.items = ventaCompleta.items.map(item => ocultarGananciaSiNoAdmin(item, esAdminCreador));
 
     res.status(201).json({
-      mensaje: 'Venta registrada exitosamente',
+      mensaje: 'Pedido registrado exitosamente',
       venta: ventaCompleta
     });
 
@@ -491,15 +504,15 @@ const anularVenta = async (req, res) => {
     }
     const contrasenaValida = await bcrypt.compare(contrasena, usuarioRes.rows[0].contrasena);
     if (!contrasenaValida) {
-      return res.status(401).json({ mensaje: 'Contraseña incorrecta. La venta no fue anulada' });
+      return res.status(401).json({ mensaje: 'Contraseña incorrecta. El pedido no fue anulado' });
     }
 
     const existe = await pool.query('SELECT * FROM ventas WHERE id = $1', [id]);
     if (existe.rows.length === 0) {
-      return res.status(404).json({ mensaje: 'Venta no encontrada' });
+      return res.status(404).json({ mensaje: 'Pedido no encontrado' });
     }
     if (existe.rows[0].anulada) {
-      return res.status(400).json({ mensaje: 'Esta venta ya había sido anulada anteriormente' });
+      return res.status(400).json({ mensaje: 'Este pedido ya había sido anulado anteriormente' });
     }
 
     const resultado = await pool.query(
@@ -514,7 +527,7 @@ const anularVenta = async (req, res) => {
     );
 
     res.json({
-      mensaje: 'Venta anulada exitosamente',
+      mensaje: 'Pedido anulado exitosamente',
       venta: resultado.rows[0]
     });
   } catch (err) {
