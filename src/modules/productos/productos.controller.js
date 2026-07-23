@@ -59,7 +59,7 @@ const obtenerProductos = async (req, res) => {
        LEFT JOIN inventario i ON p.inventario_id = i.id
        LEFT JOIN productos padre ON p.producto_padre_id = padre.id
        LEFT JOIN carpetas_productos cp ON p.carpeta_id = cp.id
-       ORDER BY p.creado_en DESC`
+       ORDER BY p.orden ASC, p.creado_en DESC`
     );
     res.json({ productos: resultado.rows });
   } catch (err) {
@@ -72,7 +72,7 @@ const obtenerProductosActivos = async (req, res) => {
   try {
     const resultado = await pool.query(
       `SELECT p.id, p.nombre, p.descripcion, p.precio_final_cop, p.precio_final_usd,
-              p.imagen_url, p.tiene_toppings, p.categoria_id,
+              p.imagen_url, p.tiene_toppings, p.categoria_id, p.orden,
               c.nombre AS categoria,
               EXISTS(
                 SELECT 1 FROM productos hijo
@@ -83,7 +83,7 @@ const obtenerProductosActivos = async (req, res) => {
        WHERE COALESCE(p.activo, true) = true
          AND p.producto_padre_id IS NULL
          AND p.carpeta_id IS NULL
-       ORDER BY c.nombre, p.nombre`
+       ORDER BY p.orden ASC, c.nombre, p.nombre`
     );
     res.json({ productos: resultado.rows });
   } catch (err) {
@@ -98,10 +98,10 @@ const obtenerVariantesProducto = async (req, res) => {
   try {
     const resultado = await pool.query(
       `SELECT p.id, p.nombre, p.descripcion, p.precio_final_cop, p.precio_final_usd,
-              p.imagen_url, p.tiene_toppings, p.categoria_id
+              p.imagen_url, p.tiene_toppings, p.categoria_id, p.orden
        FROM productos p
        WHERE p.producto_padre_id = $1 AND COALESCE(p.activo, true) = true
-       ORDER BY p.nombre ASC`,
+       ORDER BY p.orden ASC, p.nombre ASC`,
       [id]
     );
     res.json({ variantes: resultado.rows });
@@ -152,7 +152,7 @@ const crearProducto = async (req, res) => {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
     usar_precio_manual, tiene_toppings, toppings_ids, codigo,
-    producto_padre_id, carpeta_id
+    producto_padre_id, carpeta_id, orden
   } = req.body;
 
   try {
@@ -205,6 +205,7 @@ const crearProducto = async (req, res) => {
     const precioManualCopNum = num(precio_manual_cop);
     const categoriaNum = num(categoria_id);
     const inventarioNum = num(inventario_id);
+    const ordenNum = orden !== undefined && orden !== '' && !isNaN(parseInt(orden)) ? parseInt(orden) : 0;
 
     const precio_final_cop = calcularPrecioFinalCop(costoCopNum, porcentajeNum, precioManualCopNum, usarManual);
     const tasaPorUsd = parseFloat(tasaCop.tasa_por_usd);
@@ -229,8 +230,8 @@ const crearProducto = async (req, res) => {
      costo_unitario_cop, porcentaje_ganancia, precio_manual_cop, usar_precio_manual,
      precio_final_cop, tasa_cambio_usada,
      costo_unitario, precio_manual, precio_final_usd, precio_usd,
-     imagen_url, imagen_public_id, tiene_toppings, codigo, producto_padre_id, carpeta_id)
-   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+     imagen_url, imagen_public_id, tiene_toppings, codigo, producto_padre_id, carpeta_id, orden)
+   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
    RETURNING *`,
   [
     nombre,
@@ -252,7 +253,8 @@ const crearProducto = async (req, res) => {
     tieneToppings,
     codigoFinal,
     padreId,
-    carpetaId
+    carpetaId,
+    ordenNum
   ]
 );
 
@@ -282,7 +284,7 @@ const actualizarProducto = async (req, res) => {
     nombre, descripcion, categoria_id, inventario_id,
     costo_unitario_cop, porcentaje_ganancia, precio_manual_cop,
     usar_precio_manual, tiene_toppings, toppings_ids, codigo,
-    producto_padre_id, carpeta_id
+    producto_padre_id, carpeta_id, orden
   } = req.body;
 
   try {
@@ -353,6 +355,9 @@ const actualizarProducto = async (req, res) => {
     const precioManualCopNum = num(precio_manual_cop) ?? num(productoActual.precio_manual_cop);
     const categoriaNum = num(categoria_id) ?? num(productoActual.categoria_id);
     const inventarioNum = num(inventario_id) ?? num(productoActual.inventario_id);
+    const ordenNum = orden !== undefined && orden !== '' && !isNaN(parseInt(orden))
+      ? parseInt(orden)
+      : (productoActual.orden ?? 0);
 
     const precio_final_cop = calcularPrecioFinalCop(costoCopNum, porcentajeNum, precioManualCopNum, usarManual);
 
@@ -399,8 +404,9 @@ const actualizarProducto = async (req, res) => {
         tiene_toppings = $17,
         codigo = $18,
         producto_padre_id = $19,
-        carpeta_id = $20
-       WHERE id = $21
+        carpeta_id = $20,
+        orden = $21
+       WHERE id = $22
        RETURNING *`,
       [
         nombre || productoActual.nombre,
@@ -423,6 +429,7 @@ const actualizarProducto = async (req, res) => {
         codigoFinal,
         padreId,
         carpetaId,
+        ordenNum,
         id
       ]
     );
