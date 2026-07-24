@@ -6,7 +6,26 @@ const { cloudinary } = require('../../config/cloudinary');
 //                        si se envía, trae las subcarpetas de esa carpeta
 const obtenerCarpetas = async (req, res) => {
   try {
-    const { carpeta_padre_id } = req.query;
+    const { carpeta_padre_id, todas } = req.query;
+
+    // ?todas=true -> lista PLANA de TODAS las carpetas (para el selector del
+    // formulario de producto), incluye el nombre de la carpeta padre para
+    // poder mostrar "Padre / Subcarpeta" en el <select>
+    if (todas === 'true' || todas === '1') {
+      const resultado = await pool.query(
+        `SELECT c.*,
+                padre.nombre AS carpeta_padre_nombre,
+                COUNT(DISTINCT p.id) AS total_productos,
+                COUNT(DISTINCT sub.id) AS total_subcarpetas
+         FROM carpetas_productos c
+         LEFT JOIN carpetas_productos padre ON padre.id = c.carpeta_padre_id
+         LEFT JOIN productos p ON p.carpeta_id = c.id
+         LEFT JOIN carpetas_productos sub ON sub.carpeta_padre_id = c.id
+         GROUP BY c.id, padre.nombre
+         ORDER BY padre.nombre ASC NULLS FIRST, c.orden ASC, c.nombre ASC`
+      );
+      return res.json({ carpetas: resultado.rows });
+    }
 
     const params = [];
     let whereClause = 'c.carpeta_padre_id IS NULL';
