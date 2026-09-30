@@ -262,7 +262,9 @@ const crearVenta = async (req, res) => {
     } else if (monedaPago === 'USD') {
       total_pagado = total_usd;
     } else { // BS — se cruza vía USD con la tasa BS/USD vigente
-      total_pagado = parseFloat((total_usd * parseFloat(tasa_cambio_usada)).toFixed(2));
+      // Se parte de total_cop (no de total_usd ya redondeado) para no arrastrar el
+      // redondeo de USD multiplicado por la tasa BS; así coincide con lo que ve el cajero.
+      total_pagado = parseFloat(((total_cop / tasaCopPorUsd) * parseFloat(tasa_cambio_usada)).toFixed(2));
     }
 
     // Validar y calcular el vuelto (solo aplica a pagos en efectivo)
