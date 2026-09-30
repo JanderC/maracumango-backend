@@ -15,6 +15,68 @@ const bool = (val) => {
   return false;
 };
 
+// Límites de las columnas en BD (productos.nombre varchar(150), porcentaje_ganancia numeric(5,2), *_cop numeric(12,2))
+const MAX_NOMBRE = 150;
+const MAX_PORCENTAJE = 999.99;
+const MAX_MONTO_COP = 9999999999.99;
+
+// Parsea toppings_ids (array, JSON string, '' o 'null') — siempre devuelve un array, o null si el formato es inválido
+const parsearToppingsIds = (val) => {
+  if (val === undefined || val === null || val === '' || val === 'null') return [];
+  let ids = val;
+  if (!Array.isArray(ids)) {
+    try {
+      ids = JSON.parse(ids);
+    } catch {
+      return null;
+    }
+  }
+  if (ids === null) return [];
+  if (!Array.isArray(ids)) return null;
+  const enteros = ids.map(t => parseInt(t, 10));
+  if (enteros.some(t => isNaN(t))) return null;
+  return [...new Set(enteros)];
+};
+
+// Valida los campos que tienen límites en BD; devuelve un mensaje de error o null si todo está bien
+const validarCamposProducto = ({ nombre, costoCop, porcentaje, precioManualCop }) => {
+  if (nombre !== undefined && nombre !== null && String(nombre).trim().length > MAX_NOMBRE) {
+    return `El nombre no puede superar ${MAX_NOMBRE} caracteres`;
+  }
+  if (costoCop !== null && (costoCop < 0 || costoCop > MAX_MONTO_COP)) {
+    return 'El costo unitario (COP) no es válido';
+  }
+  if (porcentaje !== null && (porcentaje < 0 || porcentaje > MAX_PORCENTAJE)) {
+    return `El porcentaje de ganancia debe estar entre 0 y ${MAX_PORCENTAJE}`;
+  }
+  if (precioManualCop !== null && (precioManualCop < 0 || precioManualCop > MAX_MONTO_COP)) {
+    return 'El precio manual (COP) no es válido';
+  }
+  return null;
+};
+
+// Traduce errores conocidos de PostgreSQL a respuestas 4xx con mensaje claro (el resto queda como 500)
+const respuestaErrorBD = (err) => {
+  switch (err.code) {
+    case '22001': return { status: 400, mensaje: 'Uno de los textos enviados es demasiado largo' };
+    case '22003': return { status: 400, mensaje: 'Uno de los valores numéricos está fuera de rango' };
+    case '22P02': return { status: 400, mensaje: 'Uno de los valores enviados no tiene el formato correcto' };
+    case '23505': return { status: 409, mensaje: 'Ya existe un producto con ese código' };
+    case '23503': return { status: 400, mensaje: 'La categoría, inventario, carpeta o topping seleccionado no existe' };
+    default: return { status: 500, mensaje: 'Error interno del servidor' };
+  }
+};
+
+// Elimina una imagen de Cloudinary sin interrumpir el flujo si falla
+const eliminarImagenCloudinary = async (publicId) => {
+  if (!publicId) return;
+  try {
+    await cloudinary.uploader.destroy(publicId);
+  } catch (e) {
+    console.warn('No se pudo eliminar imagen de Cloudinary:', e.message);
+  }
+};
+
 // Calcula el precio final en COP (manual o por porcentaje de ganancia)
 const calcularPrecioFinalCop = (costo_unitario_cop, porcentaje_ganancia, precio_manual_cop, usar_precio_manual) => {
   if (usar_precio_manual && precio_manual_cop) {
@@ -207,6 +269,17 @@ const crearProducto = async (req, res) => {
     const inventarioNum = num(inventario_id);
     const ordenNum = orden !== undefined && orden !== '' && !isNaN(parseInt(orden)) ? parseInt(orden) : 0;
 
+    const errorValidacion = validarCamposProducto({
+      nombre, costoCop: costoCopNum, porcentaje: porcentajeNum, precioManualCop: precioManualCopNum
+    });
+    if (errorValidacion) {
+      return res.status(400).json({ mensaje: errorValidacion });
+    }
+    const toppingsIds = parsearToppingsIds(toppings_ids);
+    if (toppingsIds === null) {
+      return res.status(400).json({ mensaje: 'El formato de los toppings no es válido' });
+    }
+
     const precio_final_cop = calcularPrecioFinalCop(costoCopNum, porcentajeNum, precioManualCopNum, usarManual);
     const tasaPorUsd = parseFloat(tasaCop.tasa_por_usd);
 
@@ -234,7 +307,7 @@ const crearProducto = async (req, res) => {
    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
    RETURNING *`,
   [
-    nombre,
+    String(nombre).trim(),
     descripcion || null,
     categoriaNum,
     inventarioNum,
@@ -261,9 +334,8 @@ const crearProducto = async (req, res) => {
     const producto = resultado.rows[0];
 
     // Asociar toppings
-    if (tieneToppings && toppings_ids) {
-      const ids = Array.isArray(toppings_ids) ? toppings_ids : JSON.parse(toppings_ids);
-      for (const topping_id of ids) {
+    if (tieneToppings) {
+      for (const topping_id of toppingsIds) {
         await pool.query(
           'INSERT INTO producto_toppings (producto_id, topping_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
           [producto.id, topping_id]
@@ -274,7 +346,8 @@ const crearProducto = async (req, res) => {
     res.status(201).json({ mensaje: 'Producto creado exitosamente', producto });
   } catch (err) {
     console.error('Error creando producto:', err.message);
-    res.status(500).json({ mensaje: 'Error interno del servidor', detalle: err.message });
+    const { status, mensaje } = respuestaErrorBD(err);
+    res.status(status).json({ mensaje, detalle: err.message });
   }
 };
 
@@ -350,14 +423,27 @@ const actualizarProducto = async (req, res) => {
     const usarManual = usar_precio_manual !== undefined ? bool(usar_precio_manual) : productoActual.usar_precio_manual;
     const tieneToppings = tiene_toppings !== undefined ? bool(tiene_toppings) : productoActual.tiene_toppings;
 
+    const nombreFinal = nombre !== undefined && String(nombre).trim() !== '' ? String(nombre).trim() : productoActual.nombre;
     const costoCopNum = num(costo_unitario_cop) ?? parseFloat(productoActual.costo_unitario_cop);
-    const porcentajeNum = num(porcentaje_ganancia) ?? parseFloat(productoActual.porcentaje_ganancia);
+    const porcentajeNum = num(porcentaje_ganancia) ?? (num(productoActual.porcentaje_ganancia) || 0);
     const precioManualCopNum = num(precio_manual_cop) ?? num(productoActual.precio_manual_cop);
-    const categoriaNum = num(categoria_id) ?? num(productoActual.categoria_id);
-    const inventarioNum = num(inventario_id) ?? num(productoActual.inventario_id);
+    // Si el campo viene en la petición (aunque sea vacío) se respeta, para poder quitar la categoría/inventario
+    const categoriaNum = categoria_id !== undefined ? num(categoria_id) : num(productoActual.categoria_id);
+    const inventarioNum = inventario_id !== undefined ? num(inventario_id) : num(productoActual.inventario_id);
     const ordenNum = orden !== undefined && orden !== '' && !isNaN(parseInt(orden))
       ? parseInt(orden)
       : (productoActual.orden ?? 0);
+
+    const errorValidacion = validarCamposProducto({
+      nombre: nombreFinal, costoCop: costoCopNum, porcentaje: porcentajeNum, precioManualCop: precioManualCopNum
+    });
+    if (errorValidacion) {
+      return res.status(400).json({ mensaje: errorValidacion });
+    }
+    const toppingsIds = toppings_ids !== undefined ? parsearToppingsIds(toppings_ids) : undefined;
+    if (toppingsIds === null) {
+      return res.status(400).json({ mensaje: 'El formato de los toppings no es válido' });
+    }
 
     const precio_final_cop = calcularPrecioFinalCop(costoCopNum, porcentajeNum, precioManualCopNum, usarManual);
 
@@ -366,90 +452,101 @@ const actualizarProducto = async (req, res) => {
     const precio_manual = usarManual ? copAUsd(precioManualCopNum, tasaPorUsd) : null;
     const precio_final_usd = copAUsd(precio_final_cop, tasaPorUsd);
 
-    // Manejar imagen
+    // Manejar imagen (la anterior se elimina de Cloudinary solo después de guardar con éxito)
     let imagen_url = productoActual.imagen_url;
     let imagen_public_id = productoActual.imagen_public_id;
 
     if (req.file) {
-      // Eliminar imagen anterior de Cloudinary
-      if (productoActual.imagen_public_id) {
-        try {
-          await cloudinary.uploader.destroy(productoActual.imagen_public_id);
-        } catch (e) {
-          console.warn('No se pudo eliminar imagen anterior:', e.message);
-        }
-      }
       imagen_url = req.file.path;
       imagen_public_id = req.file.filename;
     }
 
-    const resultado = await pool.query(
-      `UPDATE productos SET
-        nombre = COALESCE($1, nombre),
-        descripcion = $2,
-        categoria_id = $3,
-        inventario_id = $4,
-        costo_unitario_cop = $5,
-        porcentaje_ganancia = $6,
-        precio_manual_cop = $7,
-        usar_precio_manual = $8,
-        precio_final_cop = $9,
-        tasa_cambio_usada = $10,
-        costo_unitario = $11,
-        precio_manual = $12,
-        precio_final_usd = $13,
-        precio_usd = $14,
-        imagen_url = $15,
-        imagen_public_id = $16,
-        tiene_toppings = $17,
-        codigo = $18,
-        producto_padre_id = $19,
-        carpeta_id = $20,
-        orden = $21
-       WHERE id = $22
-       RETURNING *`,
-      [
-        nombre || productoActual.nombre,
-        descripcion !== undefined ? descripcion : productoActual.descripcion,
-        categoriaNum,
-        inventarioNum,
-        costoCopNum,
-        porcentajeNum,
-        precioManualCopNum,
-        usarManual,
-        precio_final_cop,
-        tasaPorUsd,
-        costo_unitario,
-        precio_manual,
-        precio_final_usd,
-        precio_final_usd,
-        imagen_url,
-        imagen_public_id,
-        tieneToppings,
-        codigoFinal,
-        padreId,
-        carpetaId,
-        ordenNum,
-        id
-      ]
-    );
+    // Producto + toppings en una sola transacción: o se guarda todo o nada
+    const client = await pool.connect();
+    let resultado;
+    try {
+      await client.query('BEGIN');
+      resultado = await client.query(
+        `UPDATE productos SET
+          nombre = $1,
+          descripcion = $2,
+          categoria_id = $3,
+          inventario_id = $4,
+          costo_unitario_cop = $5,
+          porcentaje_ganancia = $6,
+          precio_manual_cop = $7,
+          usar_precio_manual = $8,
+          precio_final_cop = $9,
+          tasa_cambio_usada = $10,
+          costo_unitario = $11,
+          precio_manual = $12,
+          precio_final_usd = $13,
+          precio_usd = $14,
+          imagen_url = $15,
+          imagen_public_id = $16,
+          tiene_toppings = $17,
+          codigo = $18,
+          producto_padre_id = $19,
+          carpeta_id = $20,
+          orden = $21
+         WHERE id = $22
+         RETURNING *`,
+        [
+          nombreFinal,
+          descripcion !== undefined ? descripcion : productoActual.descripcion,
+          categoriaNum,
+          inventarioNum,
+          costoCopNum,
+          porcentajeNum,
+          precioManualCopNum,
+          usarManual,
+          precio_final_cop,
+          tasaPorUsd,
+          costo_unitario,
+          precio_manual,
+          precio_final_usd,
+          precio_final_usd,
+          imagen_url,
+          imagen_public_id,
+          tieneToppings,
+          codigoFinal,
+          padreId,
+          carpetaId,
+          ordenNum,
+          id
+        ]
+      );
 
-    // Actualizar toppings
-    if (toppings_ids !== undefined) {
-      await pool.query('DELETE FROM producto_toppings WHERE producto_id = $1', [id]);
-      const ids = Array.isArray(toppings_ids) ? toppings_ids : JSON.parse(toppings_ids);
-      for (const topping_id of ids) {
-        await pool.query(
-          'INSERT INTO producto_toppings (producto_id, topping_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-          [id, topping_id]
-        );
+      // Actualizar toppings
+      if (toppingsIds !== undefined) {
+        await client.query('DELETE FROM producto_toppings WHERE producto_id = $1', [id]);
+        for (const topping_id of toppingsIds) {
+          await client.query(
+            'INSERT INTO producto_toppings (producto_id, topping_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [id, topping_id]
+          );
+        }
       }
+      await client.query('COMMIT');
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+
+    // Ya guardado: ahora sí se puede eliminar la imagen anterior
+    if (req.file && productoActual.imagen_public_id && productoActual.imagen_public_id !== imagen_public_id) {
+      await eliminarImagenCloudinary(productoActual.imagen_public_id);
     }
 
     res.json({ mensaje: 'Producto actualizado exitosamente', producto: resultado.rows[0] });
   } catch (err) {
     console.error('Error actualizando producto:', err.message);
-    res.status(500).json({ mensaje: 'Error interno del servidor', detalle: err.message });
+    // Si se subió una imagen nueva y no se pudo guardar el producto, no dejarla huérfana en Cloudinary
+    if (req.file) await eliminarImagenCloudinary(req.file.filename);
+    const { status, mensaje } = respuestaErrorBD(err);
+    res.status(status).json({ mensaje, detalle: err.message });
   }
 };
 
