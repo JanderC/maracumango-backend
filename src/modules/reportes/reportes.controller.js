@@ -1,4 +1,21 @@
 const pool = require('../../config/db');
+
+// Un renglón por pago cobrado: una venta con pago dividido aporta dos, cada uno con su
+// moneda, forma de pago y su parte proporcional del total en COP y USD.
+const PAGOS_REPORTE = `(
+  SELECT creado_en, anulada, moneda_pago, tipo_pago, total_pagado,
+         total_cop - COALESCE(total_cop_2, 0) AS total_cop,
+         total_usd * (1 - COALESCE(total_cop_2, 0) / NULLIF(total_cop, 0)) AS total_usd
+    FROM ventas
+  UNION ALL
+  SELECT creado_en, anulada, moneda_pago_2, tipo_pago_2, total_pagado_2,
+         total_cop_2,
+         total_usd * total_cop_2 / NULLIF(total_cop, 0)
+    FROM ventas WHERE moneda_pago_2 IS NOT NULL
+)`;
+// En las exportaciones una venta dividida se muestra como "COP+BS" / "efectivo+transferencia"
+const MONEDA_EXPORT = `(v.moneda_pago || COALESCE('+' || v.moneda_pago_2, ''))`;
+const TIPO_EXPORT = `(v.tipo_pago || COALESCE('+' || v.tipo_pago_2, ''))`;
 const ExcelJS = require('exceljs');
 const PDFDocument = require('pdfkit');
 
@@ -54,7 +71,7 @@ const resumenGeneral = async (req, res) => {
               SUM(total_pagado) AS total_pagado,
               SUM(total_cop)    AS total_cop,
               SUM(total_usd)    AS total_usd
-       FROM ventas
+       FROM ${PAGOS_REPORTE} p
        WHERE COALESCE(anulada, false) = false ${filtroSinAlias}
        GROUP BY moneda_pago
        ORDER BY cantidad DESC`,
@@ -67,7 +84,7 @@ const resumenGeneral = async (req, res) => {
               COUNT(*) AS cantidad,
               SUM(total_cop) AS total_cop,
               SUM(total_usd) AS total_usd
-       FROM ventas
+       FROM ${PAGOS_REPORTE} p
        WHERE COALESCE(anulada, false) = false ${filtroSinAlias}
        GROUP BY tipo_pago`,
       params
@@ -207,8 +224,8 @@ const exportarVentasExcel = async (req, res) => {
         v.total_cop,
         v.total_usd,
         v.total_pagado,
-        v.moneda_pago,
-        v.tipo_pago,
+        ${MONEDA_EXPORT} AS moneda_pago,
+        ${TIPO_EXPORT} AS tipo_pago,
         cb.nombre_banco,
         cb.titular_cuenta,
         v.tasa_cambio_usada,
@@ -281,8 +298,8 @@ const exportarVentasPDF = async (req, res) => {
         v.total_cop,
         v.total_usd,
         v.total_pagado,
-        v.moneda_pago,
-        v.tipo_pago,
+        ${MONEDA_EXPORT} AS moneda_pago,
+        ${TIPO_EXPORT} AS tipo_pago,
         SUM(iv.ganancia_cop) AS ganancia_cop
        FROM ventas v
        LEFT JOIN usuarios u ON v.usuario_id = u.id

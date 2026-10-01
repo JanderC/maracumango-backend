@@ -59,16 +59,27 @@ const manejarError = (res, err, contexto) => {
 
 /* ─── Cálculos reutilizables ─── */
 
+// Un renglón por cada pago cobrado: una venta normal aporta uno y una venta con
+// pago dividido aporta dos (parte 1 y parte 2), cada uno en su moneda y forma de pago.
+const PAGOS = `(
+  SELECT creado_en, anulada, moneda_pago AS moneda, tipo_pago, total_pagado AS monto FROM ventas
+  UNION ALL
+  SELECT creado_en, anulada, moneda_pago_2, tipo_pago_2, total_pagado_2 FROM ventas WHERE moneda_pago_2 IS NOT NULL
+)`;
+// Lo cobrado en una moneda dentro de una fila de ventas (suma las dos partes si aplica)
+const cobradoEn = (m) => `(CASE WHEN moneda_pago = '${m}' THEN total_pagado ELSE 0 END
+                          + CASE WHEN moneda_pago_2 = '${m}' THEN total_pagado_2 ELSE 0 END)`;
+
 const monedasVacias = (crear) => Object.fromEntries(MONEDAS.map(m => [m, crear()]));
 
 // Ventas válidas (no anuladas) del rango [desde, hasta) agrupadas por moneda y tipo de pago
 const resumenVentas = async (db, desde, hasta) => {
   const [grupos, totales] = await Promise.all([
     db.query(
-      `SELECT moneda_pago AS moneda, tipo_pago,
+      `SELECT moneda, tipo_pago,
               COUNT(*)::int AS cantidad,
-              COALESCE(SUM(total_pagado), 0)::float AS total
-         FROM ventas
+              COALESCE(SUM(monto), 0)::float AS total
+         FROM ${PAGOS} p
         WHERE creado_en >= $1 AND creado_en < $2 AND COALESCE(anulada, false) = false
         GROUP BY 1, 2`,
       [desde, hasta]
@@ -186,7 +197,8 @@ const detalleVentas = async (db, desde, hasta) => {
   const [ventas, productos] = await Promise.all([
     db.query(
       `SELECT v.id, ${iso('v.creado_en')} AS creado_en, v.moneda_pago, v.tipo_pago,
-              v.total_pagado::float AS total_pagado, COALESCE(v.anulada, false) AS anulada
+              v.total_pagado::float AS total_pagado, COALESCE(v.anulada, false) AS anulada,
+              v.moneda_pago_2, v.tipo_pago_2, v.total_pagado_2::float AS total_pagado_2
          FROM ventas v
         WHERE v.creado_en >= $1 AND v.creado_en < $2
         ORDER BY v.creado_en`,
@@ -407,6 +419,7 @@ const obtenerDiario = async (req, res) => {
       pool.query(
         `SELECT v.id, ${iso('v.creado_en')} AS creado_en, v.moneda_pago, v.tipo_pago,
                 v.total_pagado::float AS total_pagado, v.total_cop::float AS total_cop,
+                v.moneda_pago_2, v.tipo_pago_2, v.total_pagado_2::float AS total_pagado_2,
                 COALESCE(v.anulada, false) AS anulada, u.nombre AS cajero
            FROM ventas v LEFT JOIN usuarios u ON u.id = v.usuario_id
           WHERE v.creado_en >= $1 AND v.creado_en < $2
@@ -416,7 +429,7 @@ const obtenerDiario = async (req, res) => {
       // Ventas en efectivo hechas sin ninguna caja abierta (no quedan cuadradas en ninguna sesión)
       pool.query(
         `SELECT COUNT(*)::int AS cantidad FROM ventas v
-          WHERE v.creado_en >= $1 AND v.creado_en < $2 AND v.tipo_pago = 'efectivo'
+          WHERE v.creado_en >= $1 AND v.creado_en < $2 AND (v.tipo_pago = 'efectivo' OR v.tipo_pago_2 = 'efectivo')
             AND NOT COALESCE(v.anulada, false)
             AND NOT EXISTS (SELECT 1 FROM caja_sesiones s
                              WHERE v.creado_en >= s.abierta_en AND v.creado_en < COALESCE(s.cerrada_en, NOW()))`,
@@ -450,9 +463,9 @@ const construirResumenSemana = async (db, fecha_inicio) => {
               COUNT(*) FILTER (WHERE COALESCE(anulada, false))::int AS anuladas,
               COALESCE(SUM(total_cop) FILTER (WHERE NOT COALESCE(anulada, false)), 0)::float AS total_cop,
               COALESCE(SUM(total_usd) FILTER (WHERE NOT COALESCE(anulada, false)), 0)::float AS total_usd,
-              COALESCE(SUM(total_pagado) FILTER (WHERE moneda_pago = 'COP' AND NOT COALESCE(anulada, false)), 0)::float AS "COP",
-              COALESCE(SUM(total_pagado) FILTER (WHERE moneda_pago = 'USD' AND NOT COALESCE(anulada, false)), 0)::float AS "USD",
-              COALESCE(SUM(total_pagado) FILTER (WHERE moneda_pago = 'BS'  AND NOT COALESCE(anulada, false)), 0)::float AS "BS"
+              COALESCE(SUM(${cobradoEn('COP')}) FILTER (WHERE NOT COALESCE(anulada, false)), 0)::float AS "COP",
+              COALESCE(SUM(${cobradoEn('USD')}) FILTER (WHERE NOT COALESCE(anulada, false)), 0)::float AS "USD",
+              COALESCE(SUM(${cobradoEn('BS')})  FILTER (WHERE NOT COALESCE(anulada, false)), 0)::float AS "BS"
          FROM ventas WHERE creado_en >= $1 AND creado_en < $2
         GROUP BY 1 ORDER BY 1`,
       [desde, hasta]

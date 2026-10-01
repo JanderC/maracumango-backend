@@ -12,11 +12,13 @@ const obtenerVentas = async (req, res) => {
              cb.nombre_banco,
              cb.titular_cuenta,
              cb.telefono AS banco_telefono,
-             cb.moneda AS banco_moneda
+             cb.moneda AS banco_moneda,
+             cb2.nombre_banco AS nombre_banco_2
       FROM ventas v
       LEFT JOIN usuarios u ON v.usuario_id = u.id
       LEFT JOIN usuarios ua ON v.anulada_por = ua.id
       LEFT JOIN cuentas_bancarias cb ON v.cuenta_bancaria_id = cb.id
+      LEFT JOIN cuentas_bancarias cb2 ON v.cuenta_bancaria_id_2 = cb2.id
       WHERE 1=1
     `;
 
@@ -36,13 +38,13 @@ const obtenerVentas = async (req, res) => {
     }
 
     if (moneda) {
-      query += ` AND v.moneda_pago = $${contador}`;
+      query += ` AND (v.moneda_pago = $${contador} OR v.moneda_pago_2 = $${contador})`;
       params.push(moneda.toUpperCase());
       contador++;
     }
 
     if (tipo_pago) {
-      query += ` AND v.tipo_pago = $${contador}`;
+      query += ` AND (v.tipo_pago = $${contador} OR v.tipo_pago_2 = $${contador})`;
       params.push(tipo_pago);
       contador++;
     }
@@ -78,11 +80,13 @@ const obtenerVenta = async (req, res) => {
               cb.numero_cuenta,
               cb.titular_cuenta,
               cb.telefono AS banco_telefono,
-              cb.moneda AS banco_moneda
+              cb.moneda AS banco_moneda,
+              cb2.nombre_banco AS nombre_banco_2
        FROM ventas v
        LEFT JOIN usuarios u ON v.usuario_id = u.id
        LEFT JOIN usuarios ua ON v.anulada_por = ua.id
        LEFT JOIN cuentas_bancarias cb ON v.cuenta_bancaria_id = cb.id
+       LEFT JOIN cuentas_bancarias cb2 ON v.cuenta_bancaria_id_2 = cb2.id
        WHERE v.id = $1`,
       [id]
     );
@@ -139,6 +143,9 @@ const crearVenta = async (req, res) => {
       cuenta_bancaria_id,
       tasa_cambio_usada, // tasa BS/USD, solo se usa si moneda_pago === 'BS'
       monto_recibido, // solo aplica si tipo_pago === 'efectivo' — en la moneda_pago elegida
+      // Pago dividido (opcional): { ancla: 1|2, monto, moneda_2, tipo_pago_2, cuenta_bancaria_id_2 }
+      // "ancla" es la parte cuyo monto escribió el cajero; la otra parte se calcula aquí.
+      pago_dividido,
       notas,
       items // [{ producto_id, cantidad, toppings_ids: [] }]
     } = req.body;
@@ -161,11 +168,33 @@ const crearVenta = async (req, res) => {
       return res.status(400).json({ mensaje: 'Debe seleccionar una cuenta bancaria para transferencia' });
     }
 
-    if (tipo_pago === 'efectivo' && (monto_recibido === undefined || monto_recibido === null || monto_recibido === '')) {
+    // En pago dividido no se pide "con cuánto paga": cada parte se cobra exacta
+    if (!pago_dividido && tipo_pago === 'efectivo' && (monto_recibido === undefined || monto_recibido === null || monto_recibido === '')) {
       return res.status(400).json({ mensaje: 'Debe indicar el monto recibido en efectivo' });
     }
 
-    if (monedaPago === 'BS' && !tasa_cambio_usada) {
+    let moneda2 = null;
+    if (pago_dividido) {
+      moneda2 = String(pago_dividido.moneda_2 || '').toUpperCase();
+      if (!['USD', 'BS', 'COP'].includes(moneda2)) {
+        return res.status(400).json({ mensaje: 'Moneda del segundo pago inválida. Use USD, BS o COP' });
+      }
+      if (!['efectivo', 'transferencia'].includes(pago_dividido.tipo_pago_2)) {
+        return res.status(400).json({ mensaje: 'Tipo del segundo pago inválido. Use efectivo o transferencia' });
+      }
+      if (moneda2 === monedaPago && pago_dividido.tipo_pago_2 === tipo_pago) {
+        return res.status(400).json({ mensaje: 'Los dos pagos deben ser distintos en moneda o en forma de pago' });
+      }
+      if (pago_dividido.tipo_pago_2 === 'transferencia' && !pago_dividido.cuenta_bancaria_id_2) {
+        return res.status(400).json({ mensaje: 'Debe seleccionar la cuenta bancaria del segundo pago' });
+      }
+      if (!(parseFloat(pago_dividido.monto) > 0)) {
+        return res.status(400).json({ mensaje: 'Indique el monto de uno de los dos pagos' });
+      }
+    }
+
+    const usaBs = monedaPago === 'BS' || moneda2 === 'BS';
+    if (usaBs && !(parseFloat(tasa_cambio_usada) > 0)) {
       return res.status(400).json({ mensaje: 'Debe proporcionar la tasa de cambio (BS/USD) para pagos en BS' });
     }
 
@@ -267,10 +296,44 @@ const crearVenta = async (req, res) => {
       total_pagado = parseFloat(((total_cop / tasaCopPorUsd) * parseFloat(tasa_cambio_usada)).toFixed(2));
     }
 
-    // Validar y calcular el vuelto (solo aplica a pagos en efectivo)
+    // Pago dividido: la parte que escribió el cajero (ancla) se respeta tal cual y la
+    // otra parte es lo que falta para completar total_cop, convertido a su moneda.
+    let pago2 = null;
+    if (pago_dividido) {
+      const tasaBs = parseFloat(tasa_cambio_usada);
+      const aCop = (monto, m) => (m === 'COP' ? monto : m === 'USD' ? monto * tasaCopPorUsd : (monto / tasaBs) * tasaCopPorUsd);
+      const deCop = (cop, m) => (m === 'COP' ? cop : m === 'USD' ? cop / tasaCopPorUsd : (cop / tasaCopPorUsd) * tasaBs);
+      const r2 = (n) => parseFloat(n.toFixed(2));
+
+      const ancla = Number(pago_dividido.ancla) === 2 ? 2 : 1;
+      const montoAncla = r2(parseFloat(pago_dividido.monto));
+      const monedaAncla = ancla === 1 ? monedaPago : moneda2;
+      const monedaOtra = ancla === 1 ? moneda2 : monedaPago;
+      const copAncla = aCop(montoAncla, monedaAncla);
+      const montoOtra = r2(deCop(total_cop - copAncla, monedaOtra));
+
+      if (!(montoOtra > 0)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          mensaje: `El monto ingresado (${montoAncla} ${monedaAncla}) cubre todo el pedido. Quita el pago dividido o baja el monto`
+        });
+      }
+
+      const copParte2 = r2(ancla === 1 ? total_cop - copAncla : copAncla);
+      total_pagado = ancla === 1 ? montoAncla : montoOtra;
+      pago2 = {
+        moneda: moneda2,
+        tipo: pago_dividido.tipo_pago_2,
+        monto: ancla === 1 ? montoOtra : montoAncla,
+        cop: copParte2,
+        cuenta: pago_dividido.tipo_pago_2 === 'transferencia' ? pago_dividido.cuenta_bancaria_id_2 : null
+      };
+    }
+
+    // Validar y calcular el vuelto (solo aplica a pagos en efectivo de una sola parte)
     let montoRecibidoNum = null;
     let vuelto = null;
-    if (tipo_pago === 'efectivo') {
+    if (!pago_dividido && tipo_pago === 'efectivo') {
       montoRecibidoNum = parseFloat(monto_recibido);
       if (isNaN(montoRecibidoNum) || montoRecibidoNum < 0) {
         await client.query('ROLLBACK');
@@ -289,8 +352,9 @@ const crearVenta = async (req, res) => {
     // Insertar venta
     const ventaResult = await client.query(
       `INSERT INTO ventas
-        (usuario_id, total_usd, total_cop, total_pagado, moneda_pago, tipo_pago, cuenta_bancaria_id, tasa_cambio_usada, monto_recibido, vuelto, notas)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        (usuario_id, total_usd, total_cop, total_pagado, moneda_pago, tipo_pago, cuenta_bancaria_id, tasa_cambio_usada, monto_recibido, vuelto, notas,
+         moneda_pago_2, tipo_pago_2, total_pagado_2, total_cop_2, cuenta_bancaria_id_2)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING *`,
       [
         req.usuario.id,
@@ -300,10 +364,15 @@ const crearVenta = async (req, res) => {
         monedaPago,
         tipo_pago,
         cuenta_bancaria_id || null,
-        monedaPago === 'BS' ? tasa_cambio_usada : tasaCopPorUsd,
+        usaBs ? tasa_cambio_usada : tasaCopPorUsd,
         montoRecibidoNum,
         vuelto,
-        notas || null
+        notas || null,
+        pago2?.moneda ?? null,
+        pago2?.tipo ?? null,
+        pago2?.monto ?? null,
+        pago2?.cop ?? null,
+        pago2?.cuenta ?? null
       ]
     );
 
@@ -455,10 +524,12 @@ const obtenerVentaCompleta = async (venta_id) => {
             cb.numero_cuenta,
             cb.titular_cuenta,
             cb.telefono AS banco_telefono,
-            cb.moneda AS banco_moneda
+            cb.moneda AS banco_moneda,
+            cb2.nombre_banco AS nombre_banco_2
      FROM ventas v
      LEFT JOIN usuarios u ON v.usuario_id = u.id
      LEFT JOIN cuentas_bancarias cb ON v.cuenta_bancaria_id = cb.id
+     LEFT JOIN cuentas_bancarias cb2 ON v.cuenta_bancaria_id_2 = cb2.id
      WHERE v.id = $1`,
     [venta_id]
   );
