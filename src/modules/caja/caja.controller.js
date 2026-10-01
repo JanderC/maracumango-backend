@@ -181,6 +181,31 @@ const formatoSesion = (s, monedas, ventas, movimientos) => ({
   movimientos
 });
 
+// Ventas una por una + productos vendidos en el rango (para el recibo de cierre)
+const detalleVentas = async (db, desde, hasta) => {
+  const [ventas, productos] = await Promise.all([
+    db.query(
+      `SELECT v.id, ${iso('v.creado_en')} AS creado_en, v.moneda_pago, v.tipo_pago,
+              v.total_pagado::float AS total_pagado, COALESCE(v.anulada, false) AS anulada
+         FROM ventas v
+        WHERE v.creado_en >= $1 AND v.creado_en < $2
+        ORDER BY v.creado_en`,
+      [desde, hasta]
+    ),
+    db.query(
+      `SELECT p.nombre, SUM(iv.cantidad)::int AS cantidad, SUM(iv.subtotal_cop)::float AS total_cop
+         FROM items_venta iv
+         JOIN ventas v ON v.id = iv.venta_id
+         JOIN productos p ON p.id = iv.producto_id
+        WHERE v.creado_en >= $1 AND v.creado_en < $2 AND NOT COALESCE(v.anulada, false)
+        GROUP BY p.nombre
+        ORDER BY 2 DESC, 1`,
+      [desde, hasta]
+    )
+  ]);
+  return { lista_ventas: ventas.rows, productos_vendidos: productos.rows };
+};
+
 // Límites UTC [desde, hasta) de N días locales a partir de una fecha local
 const limitesDias = async (db, fecha, dias) => {
   const r = await db.query(
@@ -276,7 +301,9 @@ const cerrarCaja = async (req, res) => {
     await client.query('COMMIT');
 
     const final = await pool.query(`${SELECT_SESION} WHERE s.id = $1`, [id]);
-    res.json({ mensaje: 'Caja cerrada', sesion: await calcularSesion(pool, final.rows[0]) });
+    const s2 = final.rows[0];
+    const [sesion, detalle] = await Promise.all([calcularSesion(pool, s2), detalleVentas(pool, s2.desde_utc, s2.hasta_utc)]);
+    res.json({ mensaje: 'Caja cerrada', sesion: { ...sesion, ...detalle } });
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     manejarError(res, err, 'cerrando caja');
@@ -354,7 +381,9 @@ const obtenerSesion = async (req, res) => {
   try {
     const s = await pool.query(`${SELECT_SESION} WHERE s.id = $1`, [req.params.id]);
     if (!s.rows.length) return res.status(404).json({ mensaje: 'Sesión no encontrada' });
-    res.json({ sesion: await calcularSesion(pool, s.rows[0]) });
+    const fila = s.rows[0];
+    const [sesion, detalle] = await Promise.all([calcularSesion(pool, fila), detalleVentas(pool, fila.desde_utc, fila.hasta_utc)]);
+    res.json({ sesion: { ...sesion, ...detalle } });
   } catch (err) { manejarError(res, err, 'obteniendo sesión'); }
 };
 
