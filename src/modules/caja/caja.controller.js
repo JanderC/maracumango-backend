@@ -376,7 +376,8 @@ const obtenerSesiones = async (req, res) => {
                 'USD', json_build_object('apertura', s.apertura_usd::float, 'esperado', s.esperado_usd::float, 'contado', s.contado_usd::float),
                 'BS',  json_build_object('apertura', s.apertura_bs::float,  'esperado', s.esperado_bs::float,  'contado', s.contado_bs::float)
               ) AS monedas,
-              (SELECT COUNT(*)::int FROM caja_movimientos m WHERE m.sesion_id = s.id) AS movimientos
+              (SELECT COUNT(*)::int FROM caja_movimientos m WHERE m.sesion_id = s.id) AS movimientos,
+              (SELECT COUNT(*)::int FROM caja_cierres_correcciones c WHERE c.sesion_id = s.id) AS correcciones
          FROM caja_sesiones s
          LEFT JOIN usuarios ua ON ua.id = s.abierta_por
          LEFT JOIN usuarios uc ON uc.id = s.cerrada_por
@@ -394,9 +395,76 @@ const obtenerSesion = async (req, res) => {
     const s = await pool.query(`${SELECT_SESION} WHERE s.id = $1`, [req.params.id]);
     if (!s.rows.length) return res.status(404).json({ mensaje: 'Sesión no encontrada' });
     const fila = s.rows[0];
-    const [sesion, detalle] = await Promise.all([calcularSesion(pool, fila), detalleVentas(pool, fila.desde_utc, fila.hasta_utc)]);
-    res.json({ sesion: { ...sesion, ...detalle } });
+    const [sesion, detalle, correcciones] = await Promise.all([
+      calcularSesion(pool, fila),
+      detalleVentas(pool, fila.desde_utc, fila.hasta_utc),
+      historialCorrecciones(pool, fila.id)
+    ]);
+    res.json({ sesion: { ...sesion, ...detalle, correcciones } });
   } catch (err) { manejarError(res, err, 'obteniendo sesión'); }
+};
+
+/* ════════════════════ CORRECCIÓN DE UN CIERRE ════════════════════ */
+
+const historialCorrecciones = async (db, sesionId) => (await db.query(
+  `SELECT c.id, c.motivo, c.antes, c.despues, ${iso('c.corregido_en')} AS corregido_en, u.nombre AS corregido_por
+     FROM caja_cierres_correcciones c LEFT JOIN usuarios u ON u.id = c.corregido_por
+    WHERE c.sesion_id = $1
+    ORDER BY c.corregido_en DESC, c.id DESC`,
+  [sesionId]
+)).rows;
+
+// PUT /caja/sesiones/:id/cierre  { contado_cop, contado_usd, contado_bs, notas, motivo }
+// Corrige lo contado de una caja cerrada. Guarda los valores anteriores y los nuevos en el historial.
+const corregirCierre = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const motivo = String(req.body.motivo || '').trim();
+    if (motivo.length < 5) throw new ErrorValidacion('Explica el motivo de la corrección (mínimo 5 letras)');
+    const nuevo = {
+      contado_cop: leerMonto(req.body.contado_cop, 'efectivo contado COP'),
+      contado_usd: leerMonto(req.body.contado_usd, 'efectivo contado USD'),
+      contado_bs: leerMonto(req.body.contado_bs, 'efectivo contado BS'),
+      notas_cierre: String(req.body.notas ?? '').trim() || null
+    };
+
+    await client.query('BEGIN');
+    const r = await client.query(
+      `SELECT id, estado, cierre_semanal_id, contado_cop::float, contado_usd::float, contado_bs::float, notas_cierre
+         FROM caja_sesiones WHERE id = $1 FOR UPDATE`,
+      [req.params.id]
+    );
+    const s = r.rows[0];
+    if (!s) { await client.query('ROLLBACK'); return res.status(404).json({ mensaje: 'Caja no encontrada' }); }
+    if (s.estado !== 'cerrada') { await client.query('ROLLBACK'); return res.status(400).json({ mensaje: 'Solo se puede corregir una caja cerrada' }); }
+    if (s.cierre_semanal_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ mensaje: 'Esta caja ya está en un cierre semanal. Elimina ese cierre semanal, corrige la caja y vuelve a cerrar la semana' });
+    }
+
+    const antes = { contado_cop: s.contado_cop, contado_usd: s.contado_usd, contado_bs: s.contado_bs, notas_cierre: s.notas_cierre };
+    const cambio = Object.keys(nuevo).some(k => (k === 'notas_cierre' ? (antes[k] || null) !== nuevo[k] : Math.abs(Number(antes[k] || 0) - nuevo[k]) >= 0.005));
+    if (!cambio) { await client.query('ROLLBACK'); return res.status(400).json({ mensaje: 'No cambiaste ningún valor' }); }
+
+    await client.query(
+      `UPDATE caja_sesiones SET contado_cop = $2, contado_usd = $3, contado_bs = $4, notas_cierre = $5 WHERE id = $1`,
+      [s.id, nuevo.contado_cop, nuevo.contado_usd, nuevo.contado_bs, nuevo.notas_cierre]
+    );
+    await client.query(
+      `INSERT INTO caja_cierres_correcciones (sesion_id, motivo, antes, despues, corregido_por) VALUES ($1, $2, $3, $4, $5)`,
+      [s.id, motivo, JSON.stringify(antes), JSON.stringify(nuevo), req.usuario.id]
+    );
+    await client.query('COMMIT');
+
+    const fila = (await pool.query(`${SELECT_SESION} WHERE s.id = $1`, [s.id])).rows[0];
+    const [sesion, detalle, correcciones] = await Promise.all([
+      calcularSesion(pool, fila), detalleVentas(pool, fila.desde_utc, fila.hasta_utc), historialCorrecciones(pool, s.id)
+    ]);
+    res.json({ mensaje: 'Cierre corregido', sesion: { ...sesion, ...detalle, correcciones } });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    manejarError(res, err, 'corrigiendo cierre');
+  } finally { client.release(); }
 };
 
 /* ════════════════════ CONTABILIDAD DIARIA ════════════════════ */
@@ -636,5 +704,6 @@ module.exports = {
   cerrarSemana,
   obtenerCierresSemanales,
   eliminarVentasSemana,
-  eliminarCierreSemanal
+  eliminarCierreSemanal,
+  corregirCierre
 };

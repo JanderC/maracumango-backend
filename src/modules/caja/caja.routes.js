@@ -13,7 +13,8 @@ const {
   cerrarSemana,
   obtenerCierresSemanales,
   eliminarVentasSemana,
-  eliminarCierreSemanal
+  eliminarCierreSemanal,
+  corregirCierre
 } = require('./caja.controller');
 const { verificarToken } = require('../../middlewares/auth');
 const { verificarRol } = require('../../middlewares/roles');
@@ -31,6 +32,7 @@ router.post('/movimientos', verificarToken, cajeros, crearMovimiento);
 router.delete('/movimientos/:id', verificarToken, admin, eliminarMovimiento);
 router.get('/sesiones', verificarToken, admin, obtenerSesiones);
 router.get('/sesiones/:id', verificarToken, admin, obtenerSesion);
+router.put('/sesiones/:id/cierre', verificarToken, admin, corregirCierre);
 router.get('/diario', verificarToken, admin, obtenerDiario);
 router.get('/semanal/preview', verificarToken, admin, previewSemana);
 router.post('/semanal/cerrar', verificarToken, admin, cerrarSemana);
