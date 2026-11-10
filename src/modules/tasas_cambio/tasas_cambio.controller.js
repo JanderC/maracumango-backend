@@ -73,8 +73,9 @@ const guardarTasaManual = async (req, res) => {
       return res.status(400).json({ mensaje: 'Moneda y tasa son requeridas' });
     }
 
-    if (!['BS', 'COP'].includes(moneda.toUpperCase())) {
-      return res.status(400).json({ mensaje: 'Moneda inválida. Use BS o COP' });
+    // COP_BS = pesos por 1 bolívar (ej. 2.85), como lo maneja el negocio
+    if (!['BS', 'COP', 'COP_BS'].includes(moneda.toUpperCase())) {
+      return res.status(400).json({ mensaje: 'Moneda inválida. Use BS, COP o COP_BS' });
     }
 
     if (parseFloat(tasa_por_usd) <= 0) {
@@ -85,7 +86,7 @@ const guardarTasaManual = async (req, res) => {
       `INSERT INTO tasas_cambio (moneda, tasa_por_usd, actualizado_por)
        VALUES ($1, $2, $3)
        RETURNING *`,
-      [moneda.toUpperCase(), tasa_por_usd, req.usuario.id]
+      [moneda.toUpperCase(), moneda.toUpperCase() === 'COP_BS' ? Math.round(parseFloat(tasa_por_usd) * 100) / 100 : tasa_por_usd, req.usuario.id]
     );
 
     res.status(201).json({
