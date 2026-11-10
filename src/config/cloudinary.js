@@ -20,4 +20,20 @@ const storage = new CloudinaryStorage({
 
 const upload = multer({ storage });
 
-module.exports = { cloudinary, upload };
+// Sube la imagen si el servicio responde; si falla (cuenta deshabilitada, sin conexión, etc.)
+// el registro se guarda igual sin cambiar la imagen y la respuesta lleva un "aviso".
+// Los demás campos del formulario ya llegaron porque la imagen se envía de última.
+const subirImagenOpcional = (campo = 'imagen') => (req, res, next) => {
+  upload.single(campo)(req, res, (err) => {
+    if (err) {
+      console.error('No se pudo subir la imagen:', err.message || err.error?.message || err);
+      delete req.file;
+      const aviso = 'La imagen no se pudo subir porque el servicio de imágenes no está disponible. Se guardó todo lo demás, sin cambiar la imagen.';
+      const json = res.json.bind(res);
+      res.json = (body) => json(body && typeof body === 'object' && res.statusCode < 400 ? { ...body, aviso } : body);
+    }
+    next();
+  });
+};
+
+module.exports = { cloudinary, upload, subirImagenOpcional };

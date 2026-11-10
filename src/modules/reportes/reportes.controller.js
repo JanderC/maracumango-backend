@@ -29,12 +29,12 @@ const resumenGeneral = async (req, res) => {
     let contador = 1;
 
     if (fecha_inicio) {
-      filtroFecha += ` AND DATE(v.creado_en) >= $${contador}`;
+      filtroFecha += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date >= $${contador}`;
       params.push(fecha_inicio);
       contador++;
     }
     if (fecha_fin) {
-      filtroFecha += ` AND DATE(v.creado_en) <= $${contador}`;
+      filtroFecha += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date <= $${contador}`;
       params.push(fecha_fin);
       contador++;
     }
@@ -137,19 +137,19 @@ const ventasPorDia = async (req, res) => {
     let contador = 1;
 
     if (fecha_inicio) {
-      filtro += ` AND DATE(v.creado_en) >= $${contador}`;
+      filtro += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date >= $${contador}`;
       params.push(fecha_inicio);
       contador++;
     }
     if (fecha_fin) {
-      filtro += ` AND DATE(v.creado_en) <= $${contador}`;
+      filtro += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date <= $${contador}`;
       params.push(fecha_fin);
       contador++;
     }
 
     const resultado = await pool.query(
       `SELECT
-        DATE(v.creado_en)        AS fecha,
+        (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date::text  AS fecha,
         COUNT(DISTINCT v.id)     AS total_ventas,
         SUM(v.total_cop)         AS total_cop,
         SUM(v.total_usd)         AS total_usd,
@@ -162,7 +162,7 @@ const ventasPorDia = async (req, res) => {
          GROUP BY venta_id
        ) g ON g.venta_id = v.id
        ${filtro}
-       GROUP BY DATE(v.creado_en)
+       GROUP BY (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date
        ORDER BY fecha DESC`,
       params
     );
@@ -213,13 +213,13 @@ const exportarVentasExcel = async (req, res) => {
     let filtro = "WHERE COALESCE(v.anulada, false) = false";
     let contador = 1;
 
-    if (fecha_inicio) { filtro += ` AND DATE(v.creado_en) >= $${contador}`; params.push(fecha_inicio); contador++; }
-    if (fecha_fin)    { filtro += ` AND DATE(v.creado_en) <= $${contador}`; params.push(fecha_fin);    contador++; }
+    if (fecha_inicio) { filtro += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date >= $${contador}`; params.push(fecha_inicio); contador++; }
+    if (fecha_fin)    { filtro += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date <= $${contador}`; params.push(fecha_fin);    contador++; }
 
     const ventas = await pool.query(
       `SELECT
         v.id,
-        TO_CHAR(v.creado_en, 'DD/MM/YYYY HH24:MI') AS fecha,
+        TO_CHAR((v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas'), 'DD/MM/YYYY HH24:MI') AS fecha,
         u.nombre        AS cajero,
         v.total_cop,
         v.total_usd,
@@ -287,13 +287,13 @@ const exportarVentasPDF = async (req, res) => {
     let filtro = "WHERE COALESCE(v.anulada, false) = false";
     let contador = 1;
 
-    if (fecha_inicio) { filtro += ` AND DATE(v.creado_en) >= $${contador}`; params.push(fecha_inicio); contador++; }
-    if (fecha_fin)    { filtro += ` AND DATE(v.creado_en) <= $${contador}`; params.push(fecha_fin);    contador++; }
+    if (fecha_inicio) { filtro += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date >= $${contador}`; params.push(fecha_inicio); contador++; }
+    if (fecha_fin)    { filtro += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date <= $${contador}`; params.push(fecha_fin);    contador++; }
 
     const ventas = await pool.query(
       `SELECT
         v.id,
-        TO_CHAR(v.creado_en, 'DD/MM/YYYY HH24:MI') AS fecha,
+        TO_CHAR((v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas'), 'DD/MM/YYYY HH24:MI') AS fecha,
         u.nombre AS cajero,
         v.total_cop,
         v.total_usd,

@@ -26,13 +26,13 @@ const obtenerVentas = async (req, res) => {
     let contador = 1;
 
     if (fecha_inicio) {
-      query += ` AND DATE(v.creado_en) >= $${contador}`;
+      query += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date >= $${contador}`;
       params.push(fecha_inicio);
       contador++;
     }
 
     if (fecha_fin) {
-      query += ` AND DATE(v.creado_en) <= $${contador}`;
+      query += ` AND (v.creado_en AT TIME ZONE 'UTC' AT TIME ZONE 'America/Caracas')::date <= $${contador}`;
       params.push(fecha_fin);
       contador++;
     }
