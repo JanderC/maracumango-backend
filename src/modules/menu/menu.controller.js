@@ -2,7 +2,7 @@ const pool = require('../../config/db');
 
 // ── Endpoints públicos, sin verificarToken ──────────────────────────────────
 // Usados por la pantalla /menu (cliente sin sesión). Solo exponen campos
-// seguros para mostrar: nunca costo, tasa_cambio_usada, ids de Cloudinary, etc.
+// seguros para mostrar: nunca costo, tasa_cambio_usada, rutas internas de imágenes, etc.
 
 const obtenerProductosMenu = async (req, res) => {
   try {

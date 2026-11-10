@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { cloudinary } = require('../../config/cloudinary');
+const { eliminarImagen } = require('../../config/almacenamiento');
 
 // ── Admin: todas las carpetas (de un nivel dado) con conteo de productos ───
 // ?carpeta_padre_id=  -> si no se envía, trae las de primer nivel (padre = NULL)
@@ -186,7 +186,7 @@ const actualizarCarpeta = async (req, res) => {
     if (req.file) {
       if (actual.imagen_public_id) {
         try {
-          await cloudinary.uploader.destroy(actual.imagen_public_id);
+          await eliminarImagen(actual.imagen_public_id);
         } catch (e) {
           console.warn('No se pudo eliminar imagen anterior:', e.message);
         }
@@ -248,9 +248,9 @@ const eliminarCarpeta = async (req, res) => {
 
     if (existe.rows[0].imagen_public_id) {
       try {
-        await cloudinary.uploader.destroy(existe.rows[0].imagen_public_id);
+        await eliminarImagen(existe.rows[0].imagen_public_id);
       } catch (e) {
-        console.warn('No se pudo eliminar imagen de Cloudinary:', e.message);
+        console.warn('No se pudo eliminar imagen del almacenamiento:', e.message);
       }
     }
 

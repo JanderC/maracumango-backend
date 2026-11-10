@@ -14,7 +14,7 @@ const {
 } = require('./productos.controller');
 const { verificarToken } = require('../../middlewares/auth');
 const { verificarRol } = require('../../middlewares/roles');
-const { subirImagenOpcional } = require('../../config/cloudinary');
+const { subirImagenOpcional } = require('../../config/almacenamiento');
 
 // Públicas con token (admin, vendedor y cliente)
 router.get('/activos', verificarToken, obtenerProductosActivos);
@@ -23,8 +23,8 @@ router.get('/:id', verificarToken, obtenerProducto);
 
 // Solo admin
 router.get('/', verificarToken, verificarRol('admin'), obtenerProductos);
-router.post('/', verificarToken, verificarRol('admin'), subirImagenOpcional(), crearProducto);
-router.put('/:id', verificarToken, verificarRol('admin'), subirImagenOpcional(), actualizarProducto);
+router.post('/', verificarToken, verificarRol('admin'), subirImagenOpcional('productos'), crearProducto);
+router.put('/:id', verificarToken, verificarRol('admin'), subirImagenOpcional('productos'), actualizarProducto);
 router.patch('/:id/toggle', verificarToken, verificarRol('admin'), toggleActivoProducto);
 router.delete('/:id', verificarToken, verificarRol('admin'), eliminarProducto);
 

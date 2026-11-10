@@ -1,5 +1,5 @@
 const pool = require('../../config/db');
-const { cloudinary } = require('../../config/cloudinary');
+const { eliminarImagen } = require('../../config/almacenamiento');
 const { resolverCodigo } = require('../../utils/codigo.helper');
 
 // Sanitiza valores numéricos — convierte '' o null a null
@@ -67,13 +67,13 @@ const respuestaErrorBD = (err) => {
   }
 };
 
-// Elimina una imagen de Cloudinary sin interrumpir el flujo si falla
-const eliminarImagenCloudinary = async (publicId) => {
+// Elimina una imagen del almacenamiento sin interrumpir el flujo si falla
+const eliminarImagenGuardada = async (publicId) => {
   if (!publicId) return;
   try {
-    await cloudinary.uploader.destroy(publicId);
+    await eliminarImagen(publicId);
   } catch (e) {
-    console.warn('No se pudo eliminar imagen de Cloudinary:', e.message);
+    console.warn('No se pudo eliminar imagen del almacenamiento:', e.message);
   }
 };
 
@@ -288,13 +288,13 @@ const crearProducto = async (req, res) => {
     const precio_manual = usarManual ? copAUsd(precioManualCopNum, tasaPorUsd) : null;
     const precio_final_usd = copAUsd(precio_final_cop, tasaPorUsd);
 
-    // Imagen subida a Cloudinary — usar URL y public_id del archivo procesado
+    // Imagen subida al almacenamiento (Supabase) — URL pública y ruta del archivo
     let imagen_url = null;
     let imagen_public_id = null;
 
     if (req.file) {
-      imagen_url = req.file.path;         // URL completa de Cloudinary
-      imagen_public_id = req.file.filename; // public_id en Cloudinary
+      imagen_url = req.file.path;         // URL pública de la imagen
+      imagen_public_id = req.file.filename; // ruta dentro del bucket (para poder borrarla)
     }
 
     const resultado = await pool.query(
@@ -452,7 +452,7 @@ const actualizarProducto = async (req, res) => {
     const precio_manual = usarManual ? copAUsd(precioManualCopNum, tasaPorUsd) : null;
     const precio_final_usd = copAUsd(precio_final_cop, tasaPorUsd);
 
-    // Manejar imagen (la anterior se elimina de Cloudinary solo después de guardar con éxito)
+    // Manejar imagen (la anterior se elimina del almacenamiento solo después de guardar con éxito)
     let imagen_url = productoActual.imagen_url;
     let imagen_public_id = productoActual.imagen_public_id;
 
@@ -537,14 +537,14 @@ const actualizarProducto = async (req, res) => {
 
     // Ya guardado: ahora sí se puede eliminar la imagen anterior
     if (req.file && productoActual.imagen_public_id && productoActual.imagen_public_id !== imagen_public_id) {
-      await eliminarImagenCloudinary(productoActual.imagen_public_id);
+      await eliminarImagenGuardada(productoActual.imagen_public_id);
     }
 
     res.json({ mensaje: 'Producto actualizado exitosamente', producto: resultado.rows[0] });
   } catch (err) {
     console.error('Error actualizando producto:', err.message);
-    // Si se subió una imagen nueva y no se pudo guardar el producto, no dejarla huérfana en Cloudinary
-    if (req.file) await eliminarImagenCloudinary(req.file.filename);
+    // Si se subió una imagen nueva y no se pudo guardar el producto, no dejarla huérfana en el almacenamiento
+    if (req.file) await eliminarImagenGuardada(req.file.filename);
     const { status, mensaje } = respuestaErrorBD(err);
     res.status(status).json({ mensaje, detalle: err.message });
   }
@@ -577,9 +577,9 @@ const eliminarProducto = async (req, res) => {
 
     if (existe.rows[0].imagen_public_id) {
       try {
-        await cloudinary.uploader.destroy(existe.rows[0].imagen_public_id);
+        await eliminarImagen(existe.rows[0].imagen_public_id);
       } catch (e) {
-        console.warn('No se pudo eliminar imagen de Cloudinary:', e.message);
+        console.warn('No se pudo eliminar imagen del almacenamiento:', e.message);
       }
     }
 

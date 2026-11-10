@@ -13,7 +13,7 @@ const {
 } = require('./carpetas.controller');
 const { verificarToken } = require('../../middlewares/auth');
 const { verificarRol } = require('../../middlewares/roles');
-const { subirImagenOpcional } = require('../../config/cloudinary');
+const { subirImagenOpcional } = require('../../config/almacenamiento');
 
 // Accesible para cualquier usuario autenticado (catálogo público / POS)
 // Ambas soportan ?carpeta_padre_id= para navegar subcarpetas
@@ -22,8 +22,8 @@ router.get('/:id', verificarToken, obtenerCarpeta);
 
 // Solo admin
 router.get('/', verificarToken, verificarRol('admin'), obtenerCarpetas);
-router.post('/', verificarToken, verificarRol('admin'), subirImagenOpcional(), crearCarpeta);
-router.put('/:id', verificarToken, verificarRol('admin'), subirImagenOpcional(), actualizarCarpeta);
+router.post('/', verificarToken, verificarRol('admin'), subirImagenOpcional('carpetas'), crearCarpeta);
+router.put('/:id', verificarToken, verificarRol('admin'), subirImagenOpcional('carpetas'), actualizarCarpeta);
 router.patch('/:id/toggle', verificarToken, verificarRol('admin'), toggleActivoCarpeta);
 router.delete('/:id', verificarToken, verificarRol('admin'), eliminarCarpeta);
 
