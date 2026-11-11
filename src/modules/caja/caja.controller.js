@@ -5,7 +5,9 @@ const bcrypt = require('bcryptjs');
    MÓDULO DE CAJA
    - Sesión de caja: se abre con un fondo en COP/USD/BS y se cierra
      contando el efectivo. Lo esperado en caja por moneda es:
-       apertura + ventas en efectivo + ingresos − egresos
+       apertura + ventas en efectivo ± vueltos en otra moneda + ingresos − egresos
+     (si un cliente paga 9 USD con 20 y el vuelto se le da en pesos, la
+     gaveta de USD se queda con los 11 de más y la de pesos pierde 33.000)
      Las transferencias se reportan aparte (no entran al cajón).
    - Las ventas pertenecen a una sesión por rango de tiempo
      [abierta_en, cerrada_en) — solo hay una caja abierta a la vez.
@@ -74,7 +76,7 @@ const monedasVacias = (crear) => Object.fromEntries(MONEDAS.map(m => [m, crear()
 
 // Ventas válidas (no anuladas) del rango [desde, hasta) agrupadas por moneda y tipo de pago
 const resumenVentas = async (db, desde, hasta) => {
-  const [grupos, totales] = await Promise.all([
+  const [grupos, totales, vueltos] = await Promise.all([
     db.query(
       `SELECT moneda, tipo_pago,
               COUNT(*)::int AS cantidad,
@@ -92,15 +94,30 @@ const resumenVentas = async (db, desde, hasta) => {
          FROM ventas
         WHERE creado_en >= $1 AND creado_en < $2`,
       [desde, hasta]
+    ),
+    // Vueltos entregados en otra moneda: entra el vuelto en la moneda del pago y sale en la del vuelto
+    db.query(
+      `SELECT moneda, SUM(monto)::float AS total, COUNT(DISTINCT id)::int AS cantidad FROM (
+         SELECT id, moneda_pago AS moneda, vuelto AS monto FROM ventas
+          WHERE vuelto_moneda IS NOT NULL AND creado_en >= $1 AND creado_en < $2 AND NOT COALESCE(anulada, false)
+         UNION ALL
+         SELECT id, vuelto_moneda, -vuelto_entregado FROM ventas
+          WHERE vuelto_moneda IS NOT NULL AND creado_en >= $1 AND creado_en < $2 AND NOT COALESCE(anulada, false)
+       ) x GROUP BY moneda`,
+      [desde, hasta]
     )
   ]);
 
+  const vueltos_otra_moneda = monedasVacias(() => ({ cantidad: 0, total: 0 }));
+  for (const v of vueltos.rows) {
+    if (vueltos_otra_moneda[v.moneda]) vueltos_otra_moneda[v.moneda] = { cantidad: v.cantidad, total: r2(v.total) };
+  }
   const por_moneda = monedasVacias(() => Object.fromEntries(TIPOS_PAGO.map(t => [t, { cantidad: 0, total: 0 }])));
   for (const g of grupos.rows) {
     if (por_moneda[g.moneda]?.[g.tipo_pago]) por_moneda[g.moneda][g.tipo_pago] = { cantidad: g.cantidad, total: r2(g.total) };
   }
   const t = totales.rows[0];
-  return { por_moneda, cantidad: t.cantidad, anuladas: t.anuladas, total_cop: r2(t.total_cop), total_usd: r2(t.total_usd) };
+  return { por_moneda, vueltos_otra_moneda, cantidad: t.cantidad, anuladas: t.anuladas, total_cop: r2(t.total_cop), total_usd: r2(t.total_usd) };
 };
 
 // Suma de ingresos/egresos por moneda de una lista de movimientos
@@ -157,12 +174,15 @@ const calcularSesion = async (db, s) => {
     const apertura = r2(s[`apertura_${k}`]);
     const ventas_efectivo = ventas.por_moneda[m].efectivo.total;
     const { ingresos, egresos } = totMov[m];
-    const esperado = r2(apertura + ventas_efectivo + ingresos - egresos);
+    const vueltos_otra_moneda = ventas.vueltos_otra_moneda[m].total;
+    const esperado = r2(apertura + ventas_efectivo + vueltos_otra_moneda + ingresos - egresos);
     const contado = cerrada && s[`contado_${k}`] !== null ? r2(s[`contado_${k}`]) : null;
     monedas[m] = {
       apertura,
       ventas_efectivo,
       cantidad_efectivo: ventas.por_moneda[m].efectivo.cantidad,
+      vueltos_otra_moneda,
+      cantidad_vueltos_otra_moneda: ventas.vueltos_otra_moneda[m].cantidad,
       transferencias: ventas.por_moneda[m].transferencia.total,
       cantidad_transferencias: ventas.por_moneda[m].transferencia.cantidad,
       ingresos,
@@ -198,7 +218,8 @@ const detalleVentas = async (db, desde, hasta) => {
     db.query(
       `SELECT v.id, ${iso('v.creado_en')} AS creado_en, v.moneda_pago, v.tipo_pago,
               v.total_pagado::float AS total_pagado, COALESCE(v.anulada, false) AS anulada,
-              v.moneda_pago_2, v.tipo_pago_2, v.total_pagado_2::float AS total_pagado_2
+              v.moneda_pago_2, v.tipo_pago_2, v.total_pagado_2::float AS total_pagado_2,
+              v.vuelto::float AS vuelto, v.vuelto_moneda, v.vuelto_entregado::float AS vuelto_entregado
          FROM ventas v
         WHERE v.creado_en >= $1 AND v.creado_en < $2
         ORDER BY v.creado_en`,

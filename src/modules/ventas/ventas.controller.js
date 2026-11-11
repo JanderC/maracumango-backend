@@ -143,6 +143,7 @@ const crearVenta = async (req, res) => {
       cuenta_bancaria_id,
       tasa_cambio_usada, // tasa BS/USD, solo se usa si moneda_pago === 'BS'
       monto_recibido, // solo aplica si tipo_pago === 'efectivo' — en la moneda_pago elegida
+      vuelto_moneda, // opcional: moneda en que se entregó el vuelto si no es la del pago (ej. pagó en USD, vuelto en COP)
       // Pago dividido (opcional): { ancla: 1|2, monto, moneda_2, tipo_pago_2, cuenta_bancaria_id_2 }
       // "ancla" es la parte cuyo monto escribió el cajero; la otra parte se calcula aquí.
       pago_dividido,
@@ -193,7 +194,14 @@ const crearVenta = async (req, res) => {
       }
     }
 
-    const usaBs = monedaPago === 'BS' || moneda2 === 'BS';
+    const monedaVuelto = vuelto_moneda ? String(vuelto_moneda).toUpperCase() : null;
+    if (monedaVuelto && !['USD', 'BS', 'COP'].includes(monedaVuelto)) {
+      return res.status(400).json({ mensaje: 'Moneda del vuelto inválida. Use USD, BS o COP' });
+    }
+    // El vuelto en otra moneda solo aplica a un pago en efectivo de una sola parte
+    const vueltoCruzado = monedaVuelto && monedaVuelto !== monedaPago && !pago_dividido && tipo_pago === 'efectivo';
+
+    const usaBs = monedaPago === 'BS' || moneda2 === 'BS' || (vueltoCruzado && monedaVuelto === 'BS');
     if (usaBs && !(parseFloat(tasa_cambio_usada) > 0)) {
       return res.status(400).json({ mensaje: 'Debe proporcionar la tasa de cambio (BS/USD) para pagos en BS' });
     }
@@ -349,12 +357,24 @@ const crearVenta = async (req, res) => {
       vuelto = parseFloat((montoRecibidoNum - total_pagado).toFixed(2));
     }
 
+    // Vuelto entregado en otra moneda: se convierte vía USD con las tasas de la venta.
+    // En pesos se redondea al peso entero.
+    let vueltoMonedaFinal = null;
+    let vueltoEntregado = null;
+    if (vueltoCruzado && vuelto > 0) {
+      const porUsd = { USD: 1, COP: tasaCopPorUsd, BS: parseFloat(tasa_cambio_usada) };
+      const convertido = (vuelto / porUsd[monedaPago]) * porUsd[monedaVuelto];
+      vueltoEntregado = monedaVuelto === 'COP' ? Math.round(convertido) : parseFloat(convertido.toFixed(2));
+      if (vueltoEntregado > 0) vueltoMonedaFinal = monedaVuelto;
+      else vueltoEntregado = null;
+    }
+
     // Insertar venta
     const ventaResult = await client.query(
       `INSERT INTO ventas
         (usuario_id, total_usd, total_cop, total_pagado, moneda_pago, tipo_pago, cuenta_bancaria_id, tasa_cambio_usada, monto_recibido, vuelto, notas,
-         moneda_pago_2, tipo_pago_2, total_pagado_2, total_cop_2, cuenta_bancaria_id_2)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+         moneda_pago_2, tipo_pago_2, total_pagado_2, total_cop_2, cuenta_bancaria_id_2, vuelto_moneda, vuelto_entregado)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING *`,
       [
         req.usuario.id,
@@ -372,7 +392,9 @@ const crearVenta = async (req, res) => {
         pago2?.tipo ?? null,
         pago2?.monto ?? null,
         pago2?.cop ?? null,
-        pago2?.cuenta ?? null
+        pago2?.cuenta ?? null,
+        vueltoMonedaFinal,
+        vueltoEntregado
       ]
     );
 
